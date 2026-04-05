@@ -491,3 +491,56 @@ button:active { transform: scale(0.97); }
     from { transform: scaleX(1); }
     to { transform: scaleX(0); }
 }
+
+/* ============================================
+   SEARCH COUNTER BADGE
+   ============================================ */
+.search-box {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.search-counter {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--neon-cyan-dim);
+    color: var(--neon-cyan);
+    border: 1px solid var(--neon-cyan-dim);
+    border-radius: 20px;
+    padding: 2px 9px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    font-family: 'Outfit', sans-serif;
+    white-space: nowrap;
+    letter-spacing: 0.5px;
+    animation: fadeIn 0.2s ease;
+    transition: all var(--transition-fast);
+}
+
+.search-counter.no-results {
+    background: rgba(239, 68, 68, 0.12);
+    color: var(--danger);
+    border-color: rgba(239, 68, 68, 0.25);
+}
+
+/* ============================================
+   TAB INLINE RENAME INPUT
+   ============================================ */
+.tab-rename-input {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid var(--neon-cyan);
+    color: var(--neon-cyan);
+    font-family: 'Outfit', sans-serif;
+    font-weight: 700;
+    font-size: 0.88rem;
+    outline: none;
+    width: 120px;
+    padding: 0 2px;
+    caret-color: var(--neon-cyan);
+    text-align: center;
+}
+

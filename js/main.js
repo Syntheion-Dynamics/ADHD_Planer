@@ -8,8 +8,17 @@ class AppManager {
     constructor() {
         this.projects = new Map();
         this.currentProject = null;
-        this.selectedNodeId = null;
+        this.selectedNodeIds = new Set(); // V2.1 — Multi-select
         this.isConnecting = false;
+
+        // Search state
+        this.searchResults = [];
+        this.searchIndex = -1;
+
+        // V2.1 — History (Undo/Redo)
+        this.history = [];
+        this.redoStack = [];
+        this.historyLimit = 50;
 
         // V2.0 — Toast systém
         this.toast = new ToastManager();
@@ -66,11 +75,23 @@ class AppManager {
         window.addEventListener('keydown', (e) => {
             const activeTag = document.activeElement.tagName.toLowerCase();
             const isInput = activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select' || document.activeElement.isContentEditable;
-            
-            // Cancel connection mode
+
+            // Cancel connection mode (vždy, i v input)
             if (e.key === 'Escape' && this.isConnecting) {
                 this.isConnecting = false;
                 document.getElementById('connect-overlay').classList.add('hidden');
+                return;
+            }
+
+            // Undo/Redo (vždy mimo input)
+            if (!isInput && e.ctrlKey && e.key === 'z') {
+                e.preventDefault();
+                this.undo();
+                return;
+            }
+            if (!isInput && e.ctrlKey && e.key === 'y') {
+                e.preventDefault();
+                this.redo();
                 return;
             }
 
@@ -78,37 +99,65 @@ class AppManager {
 
             const selected = this.getSelectedNode();
             const renderer = this.getActiveRenderer();
-            
+
+            // === VYTVOŘENÍ UZLU (N) ===
             if (e.key === 'n' || e.key === 'N') {
+                if (!this.currentProject) return;
+                this.pushHistory();
                 if (selected) {
                     const child = this.currentProject.addNode("Nový uzel", selected.x, selected.y + 120);
                     selected.addEdge(child.id);
                     this.selectNode(child.id);
-                } else if (this.currentProject) {
-                    const node = this.currentProject.addNode("Nový uzel", -renderer.camera.x + window.innerWidth/2, -renderer.camera.y + window.innerHeight/2);
+                } else {
+                    const node = this.currentProject.addNode("Nový uzel", -renderer.camera.x + window.innerWidth / 2, -renderer.camera.y + window.innerHeight / 2);
                     this.selectNode(node.id);
                 }
-            }
-            
-            if ((e.key === 'Delete' || e.key === 'Backspace') && selected) {
-                this.currentProject.deleteNode(selected.id);
-                this.selectNode(null);
-                renderer.draw();
+                return;
             }
 
+            // === SMAZÁNÍ UZLŮ (Delete / Backspace) ===
+            if (e.key === 'Delete' || e.key === 'Backspace') {
+                if (this.selectedNodeIds.size > 0) {
+                    this.pushHistory();
+                    for (let id of this.selectedNodeIds) {
+                        this.currentProject.deleteNode(id);
+                    }
+                    this.selectedNodeIds.clear();
+                    this.selectNode(null);
+                    renderer.draw();
+                    this.toast.info("Smazáno");
+                }
+                return;
+            }
+
+            // === PIN (B) ===
             if ((e.key === 'b' || e.key === 'B') && selected) {
                 selected.isPinned = !selected.isPinned;
                 this.editor.showNode(selected);
                 renderer.draw();
+                return;
             }
 
-            // Arrow keys to move selected node
+            // === Ctrl+A — Vybrat vše ===
+            if (e.ctrlKey && e.key === 'a') {
+                e.preventDefault();
+                if (!this.currentProject) return;
+                this.selectedNodeIds.clear();
+                for (let [id] of this.currentProject.nodes) {
+                    this.selectedNodeIds.add(id);
+                }
+                renderer.draw();
+                return;
+            }
+
+            // === Arrow keys — Pohyb vybraného uzlu ===
             if (selected && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
                 e.preventDefault();
+                this.pushHistory();
                 const step = renderer.GRID_SIZE;
-                if (e.key === 'ArrowUp') selected.y -= step;
-                if (e.key === 'ArrowDown') selected.y += step;
-                if (e.key === 'ArrowLeft') selected.x -= step;
+                if (e.key === 'ArrowUp')    selected.y -= step;
+                if (e.key === 'ArrowDown')  selected.y += step;
+                if (e.key === 'ArrowLeft')  selected.x -= step;
                 if (e.key === 'ArrowRight') selected.x += step;
                 renderer.draw();
             }
@@ -137,23 +186,50 @@ class AppManager {
         });
 
         const searchInput = document.getElementById('search-input');
-        searchInput.addEventListener('input', (e) => {
-            const q = e.target.value.toLowerCase();
+        const searchCounter = document.getElementById('search-counter');
+
+        const doSearch = (q) => {
             const renderer = this.getActiveRenderer();
             if (!this.currentProject || q.length === 0) {
                 renderer.hoveredNodeId = null;
+                this.searchResults = [];
+                this.searchIndex = -1;
+                if (searchCounter) searchCounter.style.display = 'none';
+                renderer.draw();
                 return;
             }
-            
+
+            this.searchResults = [];
             for (let [id, node] of this.currentProject.nodes) {
-                let foundInNotes = node.notes.some(n => n.title.toLowerCase().includes(q) || (n.content && n.content.toLowerCase().includes(q)) || (n.tags && n.tags.some(t=>t.toLowerCase().includes(q))));
-                
+                const foundInNotes = node.notes.some(n =>
+                    n.title.toLowerCase().includes(q) ||
+                    (n.content && n.content.toLowerCase().includes(q)) ||
+                    (n.tags && n.tags.some(t => t.toLowerCase().includes(q)))
+                );
                 if (node.title.toLowerCase().includes(q) || foundInNotes) {
-                    renderer.hoveredNodeId = node.id;
-                    renderer.camera.x = -node.x + renderer.canvas.width / 2;
-                    renderer.camera.y = -node.y + renderer.canvas.height / 2;
-                    return; 
+                    this.searchResults.push(node);
                 }
+            }
+
+            this.searchIndex = 0;
+            this.jumpToSearchResult(renderer);
+        };
+
+        searchInput.addEventListener('input', (e) => {
+            doSearch(e.target.value.toLowerCase());
+        });
+
+        // Enter = přesun na další výsledek
+        searchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && this.searchResults.length > 0) {
+                e.preventDefault();
+                this.searchIndex = (this.searchIndex + 1) % this.searchResults.length;
+                this.jumpToSearchResult(this.getActiveRenderer());
+            }
+            if (e.key === 'Escape') {
+                searchInput.value = '';
+                doSearch('');
+                searchInput.blur();
             }
         });
 
@@ -312,7 +388,7 @@ class AppManager {
                     nodeActions.style.display = '';
                     dividerNode.style.display = '';
                     // "Connect to selected" only if there's a different selected node
-                    if (this.selectedNodeId && this.selectedNodeId !== clickedNode.id) {
+                    if (this.selectedNodeIds.size > 0 && !this.selectedNodeIds.has(clickedNode.id)) {
                         connectSection.style.display = '';
                         dividerConnect.style.display = '';
                     } else {
@@ -367,72 +443,115 @@ class AppManager {
         const wp = this.contextMenuWorldPos;
 
         switch (action) {
-            case 'new-rect': {
+            case 'new-rect': 
+            case 'new-diamond':
+            case 'new-circle':
+            case 'new-trapezoid':
+            case 'new-cylinder': {
+                this.pushHistory();
+                const shape = action.split('-')[1];
                 const node = this.currentProject.addNode("Nový uzel", wp.x, wp.y);
-                node.shape = 'rect';
+                node.shape = shape;
                 this.selectNode(node.id);
+                this.toast.success(`Vytvořen ${shape}`);
                 break;
             }
-            case 'new-diamond': {
-                const node = this.currentProject.addNode("Nový uzel", wp.x, wp.y);
-                node.shape = 'diamond';
-                this.selectNode(node.id);
+            case 'new-image': {
+                this.handleImageNodeCreation(wp);
                 break;
             }
             case 'connect-to-selected': {
-                if (this.selectedNodeId && this.contextMenuNodeId) {
-                    const selectedNode = this.currentProject.getNode(this.selectedNodeId);
-                    if (selectedNode) {
-                        selectedNode.addEdge(this.contextMenuNodeId);
-                        this.editor.showNode(selectedNode);
-                        this.toast.success('Spojení vytvořeno!');
+                if (this.selectedNodeIds.size > 0 && this.contextMenuNodeId) {
+                    this.pushHistory();
+                    for (let sid of this.selectedNodeIds) {
+                        const snode = this.currentProject.getNode(sid);
+                        if (snode) snode.addEdge(this.contextMenuNodeId);
                     }
+                    this.toast.success('Spojení vytvořena!');
                 }
                 break;
             }
             case 'toggle-shape': {
                 if (this.contextMenuNodeId) {
+                    this.pushHistory();
                     const node = this.currentProject.getNode(this.contextMenuNodeId);
-                    if (node) {
-                        node.shape = node.shape === 'rect' ? 'diamond' : 'rect';
-                        this.selectNode(node.id);
-                    }
+                    const shapes = ['rect', 'diamond', 'circle', 'trapezoid', 'cylinder'];
+                    let nextIdx = (shapes.indexOf(node.shape) + 1) % shapes.length;
+                    node.shape = shapes[nextIdx];
+                    this.selectNode(node.id);
                 }
                 break;
             }
             case 'add-child': {
                 if (this.contextMenuNodeId) {
+                    this.pushHistory();
                     const parent = this.currentProject.getNode(this.contextMenuNodeId);
-                    if (parent) {
-                        const child = this.currentProject.addNode("Nový uzel", parent.x, parent.y + 120);
-                        parent.addEdge(child.id);
-                        this.selectNode(child.id);
-                    }
+                    const child = this.currentProject.addNode("Nový uzel", parent.x, parent.y + 120);
+                    parent.addEdge(child.id);
+                    this.selectNode(child.id);
                 }
                 break;
             }
             case 'pin-node': {
                 if (this.contextMenuNodeId) {
+                    this.pushHistory();
                     const node = this.currentProject.getNode(this.contextMenuNodeId);
-                    if (node) {
-                        node.isPinned = !node.isPinned;
-                        this.selectNode(node.id);
-                    }
+                    node.isPinned = !node.isPinned;
+                    this.selectNode(node.id);
                 }
                 break;
             }
             case 'delete-node': {
                 if (this.contextMenuNodeId) {
+                    this.pushHistory();
                     this.currentProject.deleteNode(this.contextMenuNodeId);
-                    if (this.selectedNodeId === this.contextMenuNodeId) {
-                        this.selectNode(null);
-                    }
+                    this.selectedNodeIds.delete(this.contextMenuNodeId);
+                    this.selectNode(null);
                     renderer.draw();
                 }
                 break;
             }
         }
     }
+
+    async handleImageNodeCreation(worldPos) {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/*';
+        input.onchange = async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            this.pushHistory();
+            const reader = new FileReader();
+            reader.onload = async (event) => {
+                const base64 = event.target.result;
+                try {
+                    const res = await fetch('/api/upload-image', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ filename: file.name, base64: base64 })
+                    });
+                    const data = await res.json();
+                    if (data.url) {
+                        const node = this.currentProject.addNode(file.name, worldPos.x, worldPos.y);
+                        node.shape = 'image';
+                        node.nodeImage = data.url;
+                        node.width = 150;
+                        node.height = 100;
+                        this.selectNode(node.id);
+                        this.toast.success("Obrázkový uzel přidán!");
+                    }
+                } catch (err) {
+                    this.toast.error("Upload selhal");
+                }
+            };
+            reader.readAsDataURL(file);
+        };
+        input.click();
+    }
+
+    // setupShortcuts() je definována jednou výše — tato duplikace byla odstraněna
 
     createNewProject() {
         const id = `proj_${Date.now()}`;
@@ -458,6 +577,7 @@ class AppManager {
             this.canvasRenderer.camera = { x: 0, y: 0, zoom: 1 };
             this.simRenderer.camera = { x: 0, y: 0, zoom: 1 };
             this.updateCanvasVisibility();
+            this.pushHistory(); // V2.1 — First state
         }
     }
 
@@ -470,13 +590,34 @@ class AppManager {
             tab.className = `tab ${this.currentProject && this.currentProject.id === id ? 'active' : ''}`;
             tab.innerHTML = `<span class="tab-mode-icon">${proj.mode==='simulation'?'🎲':'📁'}</span> ${proj.name}`;
             
-            tab.addEventListener('dblclick', () => {
-                const newName = prompt("Nové jméno projektu:", proj.name);
-                if (newName) {
-                    proj.name = newName;
+            tab.addEventListener('dblclick', (e) => {
+                e.stopPropagation();
+
+                // Inline rename — nahradí obsah tabu inputem
+                const icon = proj.mode === 'simulation' ? '🎲' : '📁';
+                tab.innerHTML = '';
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.className = 'tab-rename-input';
+                input.value = proj.name;
+                tab.appendChild(input);
+                input.focus();
+                input.select();
+
+                const finish = (save) => {
+                    const newName = input.value.trim();
+                    if (save && newName) {
+                        proj.name = newName;
+                        this.saveToAPI();
+                    }
                     this.renderTabs();
-                    this.saveToAPI(); 
-                }
+                };
+
+                input.addEventListener('blur', () => finish(true));
+                input.addEventListener('keydown', (ke) => {
+                    if (ke.key === 'Enter') { ke.preventDefault(); input.blur(); }
+                    if (ke.key === 'Escape') { ke.preventDefault(); input.removeEventListener('blur', () => finish(true)); this.renderTabs(); }
+                });
             });
 
             tab.addEventListener('click', () => {
@@ -486,20 +627,104 @@ class AppManager {
         }
     }
 
-    selectNode(id) {
+    selectNode(id, additive = false) {
+        if (!additive) {
+            this.selectedNodeIds.clear();
+        }
+
         if (id) {
-            this.selectedNodeId = id;
+            if (additive && this.selectedNodeIds.has(id)) {
+                this.selectedNodeIds.delete(id);
+            } else {
+                this.selectedNodeIds.add(id);
+            }
             const node = this.currentProject.getNode(id);
             this.editor.showNode(node);
         } else {
-            this.selectedNodeId = null;
-            this.editor.showNode(null);
+            if (!additive) {
+                this.selectedNodeIds.clear();
+                this.editor.showNode(null);
+            }
         }
         this.getActiveRenderer().draw();
     }
 
     getSelectedNode() {
-        return this.selectedNodeId ? this.currentProject.getNode(this.selectedNodeId) : null;
+        if (this.selectedNodeIds.size === 0) return null;
+        const lastId = Array.from(this.selectedNodeIds).pop();
+        return this.currentProject.getNode(lastId);
+    }
+
+    // =============================================
+    // SEARCH
+    // =============================================
+    jumpToSearchResult(renderer) {
+        const searchCounter = document.getElementById('search-counter');
+        if (this.searchResults.length === 0) {
+            if (searchCounter) {
+                searchCounter.style.display = 'inline-flex';
+                searchCounter.textContent = '0 výsledků';
+                searchCounter.classList.add('no-results');
+            }
+            return;
+        }
+
+        const node = this.searchResults[this.searchIndex];
+        renderer.hoveredNodeId = node.id;
+        renderer.camera.x = -node.x + renderer.canvas.width / 2;
+        renderer.camera.y = -node.y + renderer.canvas.height / 2;
+        renderer.draw();
+
+        if (searchCounter) {
+            searchCounter.style.display = 'inline-flex';
+            searchCounter.textContent = `${this.searchIndex + 1} / ${this.searchResults.length}`;
+            searchCounter.classList.remove('no-results');
+        }
+    }
+
+    // =============================================
+    // HISTORY (UNDO/REDO)
+    // =============================================
+    pushHistory() {
+        if (!this.currentProject) return;
+        const snapshot = JSON.stringify(this.currentProject.toJSON());
+        
+        // Don't push if no change
+        if (this.history.length > 0 && this.history[this.history.length - 1] === snapshot) return;
+        
+        this.history.push(snapshot);
+        if (this.history.length > this.historyLimit) this.history.shift();
+        this.redoStack = []; // Clear redo on new action
+    }
+
+    undo() {
+        if (this.history.length < 2) return; // Need at least current + previous
+        const current = this.history.pop();
+        this.redoStack.push(current);
+        
+        const previous = this.history[this.history.length - 1];
+        this.applySnapshot(previous);
+        this.toast.info("Zpět (Undo)");
+    }
+
+    redo() {
+        if (this.redoStack.length === 0) return;
+        const snapshot = this.redoStack.pop();
+        this.history.push(snapshot);
+        this.applySnapshot(snapshot);
+        this.toast.info("Vpřed (Redo)");
+    }
+
+    applySnapshot(jsonStr) {
+        const data = JSON.parse(jsonStr);
+        const project = Project.fromJSON(data);
+        this.projects.set(project.id, project);
+        this.currentProject = project;
+        // Vyčistit selection — po undo/redo mohou být ID neplatná
+        this.selectedNodeIds.clear();
+        this.editor.showNode(null);
+        this.renderTabs();
+        this.getActiveRenderer().draw();
     }
 
     async saveToAPI() {
@@ -527,6 +752,7 @@ class AppManager {
                         this.projects.set(proj.id, proj);
                     }
                     this.switchProject(data.projects[0].id);
+                    this.pushHistory(); // V2.1 — First state
                     return true;
                 }
             }

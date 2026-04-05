@@ -47,7 +47,11 @@ export class EditorController {
 
     setupEventListeners() {
         this.titleInput.addEventListener('input', (e) => {
-            if (this.currentNodeNode) this.currentNodeNode.title = e.target.value;
+            if (this.currentNodeNode) {
+                // Not pushing history on every character, but maybe on focus/blur?
+                // For now, simple update is fine.
+                this.currentNodeNode.title = e.target.value;
+            }
         });
 
         this.richEditor.addEventListener('input', () => {
@@ -70,13 +74,15 @@ export class EditorController {
 
         this.deleteNodeBtn.addEventListener('click', () => {
             if (this.currentNodeNode) {
+                this.appManager.pushHistory();
                 this.appManager.currentProject.deleteNode(this.currentNodeNode.id);
-                this.showNode(null); 
+                this.appManager.selectNode(null); 
             }
         });
 
         this.addChildBtn.addEventListener('click', () => {
             if (this.currentNodeNode) {
+                this.appManager.pushHistory();
                 const child = this.appManager.currentProject.addNode(
                     "Nový uzel", 
                     this.currentNodeNode.x, 
@@ -89,7 +95,11 @@ export class EditorController {
 
         this.toggleShapeBtn.addEventListener('click', () => {
             if (this.currentNodeNode) {
-                this.currentNodeNode.shape = this.currentNodeNode.shape === 'rect' ? 'diamond' : 'rect';
+                this.appManager.pushHistory();
+                const shapes = ['rect', 'diamond', 'circle', 'trapezoid', 'cylinder'];
+                let idx = shapes.indexOf(this.currentNodeNode.shape);
+                if (idx === -1) idx = 0;
+                this.currentNodeNode.shape = shapes[(idx + 1) % shapes.length];
                 this.appManager.getActiveRenderer().draw();
             }
         });

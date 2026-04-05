@@ -59,6 +59,10 @@ export class Project {
             node.isPinned = nData.isPinned || false;
             node.statValue = nData.statValue || 0.0;
             node.nodeImage = nData.nodeImage || null;
+            
+            // V2.1 Geometry persistence
+            if (nData.width) node.width = nData.width;
+            if (nData.height) node.height = nData.height;
 
             if (nData.notes && Array.isArray(nData.notes)) {
                 nData.notes.forEach(note => {

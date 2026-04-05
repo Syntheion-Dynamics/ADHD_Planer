@@ -11,13 +11,23 @@ export class CanvasRenderer {
         
         this.isDragging = false;
         this.isPanning = false;
+        this.isResizing = false;
+        this.isSelecting = false;
+        
         this.dragNode = null;
+        this.resizeDir = null; // 'nw', 'ne', 'sw', 'se'
+        this.initialBounds = null; // V2.1
+        this.aspectRatio = 1; // V2.1
+        this.selectionStart = { x: 0, y: 0 };
         this.lastMouse = { x: 0, y: 0 };
         this.hoveredNodeId = null;
         
         // V2.0 animation state
         this.animTime = 0;
         this.lastFrameTime = performance.now();
+
+        // Image cache
+        this.imageCache = new Map();
 
         this.setupEventListeners();
         this.resize();
@@ -38,36 +48,54 @@ export class CanvasRenderer {
 
     setupEventListeners() {
         this.canvas.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return; // Only left click for these
+
             const rect = this.canvas.getBoundingClientRect();
             const mouseX = e.clientX - rect.left;
             const mouseY = e.clientY - rect.top;
             const worldPos = this.toWorld(mouseX, mouseY);
-            
             this.lastMouse = { x: mouseX, y: mouseY };
+
             const project = this.getProject();
             if (!project) return;
             
+            // Context menu close
+            this.appManager.hideContextMenu();
+
+            // 1. Check for Resize Handles
+            if (this.appManager.selectedNodeIds.size === 1) {
+                const node = project.getNode(Array.from(this.appManager.selectedNodeIds)[0]);
+                const handle = this.getResizeHandleAt(node, worldPos);
+                if (handle) {
+                    this.isResizing = true;
+                    this.dragNode = node;
+                    this.resizeDir = handle;
+                    this.initialBounds = { x: node.x, y: node.y, w: node.width, h: node.height };
+                    this.aspectRatio = node.width / node.height;
+                    this.appManager.pushHistory();
+                    return;
+                }
+            }
+
+            // 2. Check for Nodes
             let clickedNode = null;
             const nodesArr = Array.from(project.nodes.values()).reverse();
             for (let node of nodesArr) {
-                let ww = node.shape === 'diamond' ? node.width * 1.5 : node.width;
-                let hh = node.shape === 'diamond' ? node.height * 1.5 : node.height;
-                let cx = node.shape === 'diamond' ? node.x - node.width*0.25 : node.x;
-                let cy = node.shape === 'diamond' ? node.y - node.height*0.25 : node.y;
-
-                if (worldPos.x >= cx && worldPos.x <= cx + ww &&
-                    worldPos.y >= cy && worldPos.y <= cy + hh) {
+                const b = node.getBounds();
+                if (worldPos.x >= b.x && worldPos.x <= b.x + b.w &&
+                    worldPos.y >= b.y && worldPos.y <= b.y + b.h) {
                     clickedNode = node;
                     break;
                 }
             }
 
             if (this.appManager.isConnecting) {
-                if (clickedNode && clickedNode.id !== this.appManager.selectedNodeId) {
-                    const snode = project.getNode(this.appManager.selectedNodeId);
+                if (clickedNode && !this.appManager.selectedNodeIds.has(clickedNode.id)) {
+                    // Logic handled in Editor or Main usually, but let's sync
+                    const snode = this.appManager.getSelectedNode();
                     if (snode) {
                         snode.addEdge(clickedNode.id);
-                        this.appManager.selectNode(this.appManager.selectedNodeId);
+                        this.appManager.pushHistory();
                     }
                 }
                 this.appManager.isConnecting = false;
@@ -76,11 +104,19 @@ export class CanvasRenderer {
             }
 
             if (clickedNode) {
-                this.appManager.selectNode(clickedNode.id);
+                const isSelected = this.appManager.selectedNodeIds.has(clickedNode.id);
+                this.appManager.selectNode(clickedNode.id, e.shiftKey);
                 this.isDragging = true;
                 this.dragNode = clickedNode;
+                this.appManager.pushHistory();
             } else {
-                this.isPanning = true;
+                if (e.shiftKey) {
+                    this.isSelecting = true;
+                    this.selectionStart = worldPos;
+                } else {
+                    this.isPanning = true;
+                    this.appManager.selectNode(null);
+                }
             }
         });
 
@@ -88,47 +124,76 @@ export class CanvasRenderer {
             const rect = this.canvas.getBoundingClientRect();
             const mouseX = e.clientX - rect.left;
             const mouseY = e.clientY - rect.top;
+            const worldPos = this.toWorld(mouseX, mouseY);
             const dx = mouseX - this.lastMouse.x;
             const dy = mouseY - this.lastMouse.y;
+            const dwx = dx / this.camera.zoom;
+            const dwy = dy / this.camera.zoom;
             this.lastMouse = { x: mouseX, y: mouseY };
 
-            if (this.isDragging && this.dragNode) {
-                this.dragNode.x += dx / this.camera.zoom;
-                this.dragNode.y += dy / this.camera.zoom;
+            if (this.isResizing && this.dragNode) {
+                this.handleResizeMove(this.dragNode, worldPos, e.shiftKey);
+            } else if (this.isDragging && this.dragNode) {
+                // Move all selected nodes
+                for (let id of this.appManager.selectedNodeIds) {
+                    const node = this.getProject().getNode(id);
+                    if (node) {
+                        node.x += dwx;
+                        node.y += dwy;
+                    }
+                }
             } else if (this.isPanning) {
-                this.camera.x += dx / this.camera.zoom;
-                this.camera.y += dy / this.camera.zoom;
+                this.camera.x += dwx;
+                this.camera.y += dwy;
+            } else if (this.isSelecting) {
+                // Selection box logic handled in draw
             } else {
-                const worldPos = this.toWorld(mouseX, mouseY);
+                // Hover check
                 const project = this.getProject();
                 this.hoveredNodeId = null;
                 if (project) {
-                    const nodesArr = Array.from(project.nodes.values()).reverse();
-                    for (let node of nodesArr) {
-                        let ww = node.shape === 'diamond' ? node.width * 1.5 : node.width;
-                        let hh = node.shape === 'diamond' ? node.height * 1.5 : node.height;
-                        let cx = node.shape === 'diamond' ? node.x - node.width*0.25 : node.x;
-                        let cy = node.shape === 'diamond' ? node.y - node.height*0.25 : node.y;
-
-                        if (worldPos.x >= cx && worldPos.x <= cx + ww &&
-                            worldPos.y >= cy && worldPos.y <= cy + hh) {
+                    for (let [id, node] of project.nodes) {
+                        const b = node.getBounds();
+                        if (worldPos.x >= b.x && worldPos.x <= b.x + b.w &&
+                            worldPos.y >= b.y && worldPos.y <= b.y + b.h) {
                             this.hoveredNodeId = node.id;
-                            break;
                         }
                     }
                 }
-                this.canvas.style.cursor = this.hoveredNodeId ? 'pointer' : (this.isPanning ? 'grabbing' : 'crosshair');
+                
+                // Cursor style
+                if (this.hoveredNodeId) {
+                    this.canvas.style.cursor = 'pointer';
+                } else {
+                    this.canvas.style.cursor = this.isPanning ? 'grabbing' : 'crosshair';
+                }
             }
         });
 
-        window.addEventListener('mouseup', () => {
-            if (this.isDragging && this.dragNode) {
-                this.dragNode.x = Math.round(this.dragNode.x / this.GRID_SIZE) * this.GRID_SIZE;
-                this.dragNode.y = Math.round(this.dragNode.y / this.GRID_SIZE) * this.GRID_SIZE;
+        window.addEventListener('mouseup', (e) => {
+            if (this.isSelecting) {
+                this.finishSelection(this.toWorld(e.clientX - this.canvas.getBoundingClientRect().left, e.clientY - this.canvas.getBoundingClientRect().top));
             }
+            
+            if ((this.isDragging || this.isResizing) && this.dragNode) {
+                // Snap to grid
+                for (let id of this.appManager.selectedNodeIds) {
+                    const node = this.getProject().getNode(id);
+                    if (node) {
+                        node.x = Math.round(node.x / this.GRID_SIZE) * this.GRID_SIZE;
+                        node.y = Math.round(node.y / this.GRID_SIZE) * this.GRID_SIZE;
+                        node.width = Math.round(node.width / this.GRID_SIZE) * this.GRID_SIZE;
+                        node.height = Math.round(node.height / this.GRID_SIZE) * this.GRID_SIZE;
+                    }
+                }
+            }
+
             this.isDragging = false;
             this.isPanning = false;
+            this.isResizing = false;
+            this.isSelecting = false;
             this.dragNode = null;
+            this.resizeDir = null;
         });
 
         this.canvas.addEventListener('wheel', (e) => {
@@ -146,6 +211,122 @@ export class CanvasRenderer {
             this.camera.x += (worldAfter.x - worldBefore.x);
             this.camera.y += (worldAfter.y - worldBefore.y);
         }, { passive: false });
+    }
+
+    getResizeHandleAt(node, worldPos) {
+        const b = node.getBounds();
+        const s = 10; // Handle size
+        if (Math.abs(worldPos.x - b.x) < s && Math.abs(worldPos.y - b.y) < s) return 'nw';
+        if (Math.abs(worldPos.x - (b.x+b.w)) < s && Math.abs(worldPos.y - b.y) < s) return 'ne';
+        if (Math.abs(worldPos.x - b.x) < s && Math.abs(worldPos.y - (b.y+b.h)) < s) return 'sw';
+        if (Math.abs(worldPos.x - (b.x+b.w)) < s && Math.abs(worldPos.y - (b.y+b.h)) < s) return 'se';
+        return null;
+    }
+
+    handleResizeMove(node, worldPos, shiftKey) {
+        const GRID = this.GRID_SIZE;
+        const b = this.initialBounds;
+        const isImage = node.shape === 'image';
+        const lockRatio = isImage ? !shiftKey : shiftKey;
+
+        if (this.resizeDir === 'se') {
+            let nw = Math.max(GRID, worldPos.x - b.x);
+            let nh = Math.max(GRID, worldPos.y - b.y);
+
+            // Real-time grid snapping
+            nw = Math.round(nw / GRID) * GRID;
+            nh = Math.round(nh / GRID) * GRID;
+
+            if (lockRatio) {
+                if (nw / nh > this.aspectRatio) {
+                    nw = nh * this.aspectRatio;
+                } else {
+                    nh = nw / this.aspectRatio;
+                }
+                nw = Math.round(nw / GRID) * GRID;
+                nh = Math.round(nh / GRID) * GRID;
+            }
+
+            node.width = nw;
+            node.height = nh;
+        } else if (this.resizeDir === 'nw') {
+            const oldRight = b.x + b.w;
+            const oldBottom = b.y + b.h;
+            
+            let nx = Math.round(worldPos.x / GRID) * GRID;
+            let ny = Math.round(worldPos.y / GRID) * GRID;
+            
+            let nw = Math.max(GRID, oldRight - nx);
+            let nh = Math.max(GRID, oldBottom - ny);
+
+            if (lockRatio) {
+                if (nw / nh > this.aspectRatio) {
+                    nw = nh * this.aspectRatio;
+                } else {
+                    nh = nw / this.aspectRatio;
+                }
+                nw = Math.round(nw / GRID) * GRID;
+                nh = Math.round(nh / GRID) * GRID;
+            }
+
+            node.x = oldRight - nw;
+            node.y = oldBottom - nh;
+            node.width = nw;
+            node.height = nh;
+        } else if (this.resizeDir === 'ne') {
+            const oldBottom = b.y + b.h;
+            let ny = Math.round(worldPos.y / GRID) * GRID;
+            let nw = Math.max(GRID, worldPos.x - b.x);
+            let nh = Math.max(GRID, oldBottom - ny);
+
+            nw = Math.round(nw / GRID) * GRID;
+            nh = Math.round(nh / GRID) * GRID;
+
+            if (lockRatio) {
+                if (nw / nh > this.aspectRatio) nw = nh * this.aspectRatio;
+                else nh = nw / this.aspectRatio;
+                nw = Math.round(nw / GRID) * GRID;
+                nh = Math.round(nh / GRID) * GRID;
+            }
+
+            node.y = oldBottom - nh;
+            node.width = nw;
+            node.height = nh;
+        } else if (this.resizeDir === 'sw') {
+            const oldRight = b.x + b.w;
+            let nx = Math.round(worldPos.x / GRID) * GRID;
+            let nw = Math.max(GRID, oldRight - nx);
+            let nh = Math.max(GRID, worldPos.y - b.y);
+
+            nw = Math.round(nw / GRID) * GRID;
+            nh = Math.round(nh / GRID) * GRID;
+
+            if (lockRatio) {
+                if (nw / nh > this.aspectRatio) nw = nh * this.aspectRatio;
+                else nh = nw / this.aspectRatio;
+                nw = Math.round(nw / GRID) * GRID;
+                nh = Math.round(nh / GRID) * GRID;
+            }
+
+            node.x = oldRight - nw;
+            node.width = nw;
+            node.height = nh;
+        }
+    }
+
+    finishSelection(worldEnd) {
+        const x1 = Math.min(this.selectionStart.x, worldEnd.x);
+        const y1 = Math.min(this.selectionStart.y, worldEnd.y);
+        const x2 = Math.max(this.selectionStart.x, worldEnd.x);
+        const y2 = Math.max(this.selectionStart.y, worldEnd.y);
+
+        const project = this.getProject();
+        for (let [id, node] of project.nodes) {
+            const b = node.getBounds();
+            if (b.x >= x1 && b.x + b.w <= x2 && b.y >= y1 && b.y + b.h <= y2) {
+                this.appManager.selectNode(id, true);
+            }
+        }
     }
 
     drawGrid() {
@@ -173,27 +354,6 @@ export class CanvasRenderer {
         this.ctx.stroke();
     }
 
-    // ---- BEZIER HELPERS (V2.0) ----
-    
-    bezierPoint(p0, p1, p2, p3, t) {
-        const mt = 1 - t;
-        return mt*mt*mt*p0 + 3*mt*mt*t*p1 + 3*mt*t*t*p2 + t*t*t*p3;
-    }
-
-    bezierTangent(p0, p1, p2, p3, t) {
-        const mt = 1 - t;
-        return 3*mt*mt*(p1-p0) + 6*mt*t*(p2-p1) + 3*t*t*(p3-p2);
-    }
-
-    getEdgeEndpoints(parent, child) {
-        const p1 = this.toScreen(parent.x + parent.width / 2, parent.y + parent.height);
-        const p2 = this.toScreen(child.x + child.width / 2, child.y);
-        const ctrlY = (p1.y + p2.y) / 2;
-        const cp1 = { x: p1.x, y: ctrlY };
-        const cp2 = { x: p2.x, y: ctrlY };
-        return { p1, p2, cp1, cp2 };
-    }
-
     draw() {
         const now = performance.now();
         const dt = (now - this.lastFrameTime) / 1000;
@@ -208,7 +368,7 @@ export class CanvasRenderer {
 
         const isLight = document.body.classList.contains('light-mode');
 
-        // 1. KRESLENÍ ČAR
+        // 1. EDGES
         for (let [id, node] of project.nodes) {
             for (let edge of node.edges) {
                 const child = project.getNode(edge.targetId);
@@ -220,177 +380,226 @@ export class CanvasRenderer {
             }
         }
 
-        // 2. KRESLENÍ UZLŮ
+        // 2. NODES
         for (let [id, node] of project.nodes) {
             this.drawNode(node, isLight);
         }
+
+        // 3. SELECTION BOX
+        if (this.isSelecting) {
+            const s = this.toScreen(this.selectionStart.x, this.selectionStart.y);
+            const e = this.toScreen(this.lastMouse.x / this.camera.zoom - this.camera.x, this.lastMouse.y / this.camera.zoom - this.camera.y);
+            // Wait, mapping is simpler since lastMouse is already in screen space
+            const m = this.lastMouse;
+            
+            this.ctx.strokeStyle = 'rgba(0, 240, 255, 0.5)';
+            this.ctx.lineWidth = 1;
+            this.ctx.setLineDash([5, 5]);
+            this.ctx.strokeRect(s.x, s.y, m.x - s.x, m.y - s.y);
+            this.ctx.fillStyle = 'rgba(0, 240, 255, 0.05)';
+            this.ctx.fillRect(s.x, s.y, m.x - s.x, m.y - s.y);
+            this.ctx.setLineDash([]);
+        }
+
+        // 4. MINIMAP
+        this.drawMinimap(project, isLight);
     }
 
     drawBasicEdge(parent, child) {
-        const { p1, p2, cp1, cp2 } = this.getEdgeEndpoints(parent, child);
+        const pStart = parent.getBounds();
+        const pEnd = child.getBounds();
+        
+        const p1 = this.toScreen(pStart.x + pStart.w / 2, pStart.y + pStart.h);
+        const p2 = this.toScreen(pEnd.x + pEnd.w / 2, pEnd.y);
+        
+        const ctrlY = (p1.y + p2.y) / 2;
+        const cp1 = { x: p1.x, y: ctrlY };
+        const cp2 = { x: p2.x, y: ctrlY };
+
         this.ctx.beginPath();
         this.ctx.moveTo(p1.x, p1.y);
         this.ctx.bezierCurveTo(cp1.x, cp1.y, cp2.x, cp2.y, p2.x, p2.y);
         this.ctx.stroke();
     }
 
-    // V2.0 — Opravená šipka: trojúhelník zahnutý ve směru tečny křivky
-    drawArrowhead(x, y, angle, color, size = 7) {
-        const s = this.camera.zoom;
-        this.ctx.save();
-        this.ctx.translate(x, y);
-        this.ctx.rotate(angle);
-        this.ctx.beginPath();
-        // Trojúhelník směřující doprava (angle=0 → tip na +x)
-        const tipLen = size * s;
-        const halfBase = (size * 0.6) * s;
-        this.ctx.moveTo(tipLen, 0);         // špička
-        this.ctx.lineTo(-halfBase, -halfBase); // vlevo nahoře
-        this.ctx.lineTo(-halfBase, halfBase);  // vlevo dole
-        this.ctx.closePath();
-        this.ctx.fillStyle = color;
-        this.ctx.fill();
-        this.ctx.restore();
-    }
-
     drawNode(node, isLight) {
-        let p = this.toScreen(node.x, node.y);
-        let w = node.width * this.camera.zoom;
-        let h = node.height * this.camera.zoom;
-        const isSelected = this.appManager.selectedNodeId === node.id;
+        const b = node.getBounds();
+        const p = this.toScreen(b.x, b.y);
+        const w = b.w * this.camera.zoom;
+        const h = b.h * this.camera.zoom;
+        const s = this.camera.zoom;
+        
+        const isSelected = this.appManager.selectedNodeIds.has(node.id);
         const isHovered = this.hoveredNodeId === node.id;
 
-        let actualW = w; let actualH = h; let startX = p.x; let startY = p.y;
-        if (node.shape === 'diamond') {
-            actualW = w * 1.5;
-            actualH = h * 1.5;
-            startX = p.x - w*0.25;
-            startY = p.y - h*0.25;
-        }
-
-        // V2.0 — Stín
+        // Shadow
         this.ctx.shadowColor = isSelected ? (isLight ? 'rgba(59, 130, 246, 0.5)' : 'rgba(0, 240, 255, 0.5)') : 'rgba(0, 0, 0, 0.3)';
-        this.ctx.shadowBlur = isSelected ? 18 : 6;
-        this.ctx.shadowOffsetX = 0;
-        this.ctx.shadowOffsetY = 3;
+        this.ctx.shadowBlur = isSelected ? 18 * s : 6 * s;
 
-        // V2.0 — Gradient pozadí uzlu
-        let bgGrad;
-        if (node.shape === 'diamond') {
-            bgGrad = isLight ? (isSelected ? '#e0e7ff' : '#ffffff') : (isSelected ? '#1e2235' : '#191b24');
+        // Background Gradient
+        let bgGrad = this.ctx.createLinearGradient(p.x, p.y, p.x, p.y + h);
+        if (isLight) {
+            bgGrad.addColorStop(0, isSelected ? '#e8edff' : '#ffffff');
+            bgGrad.addColorStop(1, isSelected ? '#dbe4ff' : '#f8fafc');
         } else {
-            bgGrad = this.ctx.createLinearGradient(startX, startY, startX, startY + actualH);
-            if (isLight) {
-                bgGrad.addColorStop(0, isSelected ? '#e8edff' : '#ffffff');
-                bgGrad.addColorStop(1, isSelected ? '#dbe4ff' : '#f8fafc');
-            } else {
-                bgGrad.addColorStop(0, isSelected ? '#222640' : '#1f2130');
-                bgGrad.addColorStop(1, isSelected ? '#1a1e35' : '#16181f');
-            }
+            bgGrad.addColorStop(0, isSelected ? '#222640' : '#1f2130');
+            bgGrad.addColorStop(1, isSelected ? '#1a1e35' : '#16181f');
         }
         
-        // Border barva
-        let borderColor = isSelected ? (isLight ? '#3b82f6' : '#00f0ff') : (isHovered ? (isLight?'#8b5cf6':'#9d4edd') : (isLight ? 'rgba(0, 0, 0, 0.1)' : 'rgba(255, 255, 255, 0.1)'));
-        let statusStroke = false;
-        
-        if (!isSelected && node.status !== 'none' && node.status) {
-            statusStroke = true;
-            if (node.status === 'todo') borderColor = isLight ? '#9ca3af' : '#6b7280';
-            else if (node.status === 'progress') borderColor = '#f59e0b';
-            else if (node.status === 'done') borderColor = '#10b981';
-            else if (node.status === 'blocked') borderColor = '#ef4444';
-        }
-
         this.ctx.fillStyle = bgGrad;
         
+        // DRAW SHAPE
         this.ctx.beginPath();
-        if (node.shape === 'diamond') {
-            this.ctx.moveTo(startX + actualW/2, startY);
-            this.ctx.lineTo(startX + actualW, startY + actualH/2);
-            this.ctx.lineTo(startX + actualW/2, startY + actualH);
-            this.ctx.lineTo(startX, startY + actualH/2);
+        if (node.shape === 'rect' || node.shape === 'image') {
+            const radius = 10 * s;
+            this.ctx.roundRect(p.x, p.y, w, h, radius);
+        } else if (node.shape === 'diamond') {
+            this.ctx.moveTo(p.x + w/2, p.y);
+            this.ctx.lineTo(p.x + w, p.y + h/2);
+            this.ctx.lineTo(p.x + w/2, p.y + h);
+            this.ctx.lineTo(p.x, p.y + h/2);
             this.ctx.closePath();
-        } else {
-            const radius = 10 * this.camera.zoom;
-            this.ctx.roundRect(startX, startY, actualW, actualH, radius);
+        } else if (node.shape === 'circle') {
+            this.ctx.arc(p.x + w/2, p.y + h/2, Math.min(w,h)/2, 0, Math.PI*2);
+        } else if (node.shape === 'trapezoid') {
+            this.ctx.moveTo(p.x + w*0.2, p.y);
+            this.ctx.lineTo(p.x + w*0.8, p.y);
+            this.ctx.lineTo(p.x + w, p.y + h);
+            this.ctx.lineTo(p.x, p.y + h);
+            this.ctx.closePath();
+        } else if (node.shape === 'cylinder') {
+            const eh = 10 * s;
+            this.ctx.moveTo(p.x, p.y + eh);
+            this.ctx.bezierCurveTo(p.x, p.y - eh/3, p.x + w, p.y - eh/3, p.x + w, p.y + eh);
+            this.ctx.lineTo(p.x + w, p.y + h - eh);
+            this.ctx.bezierCurveTo(p.x + w, p.y + h + eh/3, p.x, p.y + h + eh/3, p.x, p.y + h - eh);
+            this.ctx.closePath();
         }
+        
         this.ctx.fill();
-        
         this.ctx.shadowBlur = 0;
-        this.ctx.shadowColor = 'transparent';
-        
-        // Border
-        this.ctx.lineWidth = (statusStroke || isSelected) ? 2.5 * this.camera.zoom : 1.5 * this.camera.zoom;
-        this.ctx.strokeStyle = borderColor;
+
+        // BORDER
+        this.ctx.lineWidth = isSelected ? 3 * s : 1.5 * s;
+        this.ctx.strokeStyle = isSelected ? (isLight ? '#3b82f6' : '#00f0ff') : (isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)');
         this.ctx.stroke();
 
-        // V2.0 — Status stripe na levé straně (jen rect)
-        if (node.shape === 'rect' && node.status && node.status !== 'none') {
-            let stripeColor = '#6b7280';
-            if (node.status === 'todo') stripeColor = '#6b7280';
-            else if (node.status === 'progress') stripeColor = '#f59e0b';
-            else if (node.status === 'done') stripeColor = '#10b981';
-            else if (node.status === 'blocked') stripeColor = '#ef4444';
-            
-            const stripeW = 4 * this.camera.zoom;
-            const radius = 10 * this.camera.zoom;
+        // IMAGE NODE SPECIAL
+        if (node.shape === 'image' && node.nodeImage) {
+            this.drawNodeAsImage(node, p, w, h, s, isLight);
+        } else {
+            // TEXT CONTENT (for non-image shapes)
+            this.drawNodeText(node, p, w, h, s, isLight);
+        }
+
+        // RESIZE HANDLES (if only one selected)
+        if (isSelected && this.appManager.selectedNodeIds.size === 1) {
+            this.drawResizeHandles(p, w, h, s);
+        }
+    }
+
+    drawNodeAsImage(node, p, w, h, s, isLight) {
+        if (!this.imageCache.has(node.nodeImage)) {
+            const img = new Image();
+            img.src = node.nodeImage;
+            img.onload = () => { this.imageCache.set(node.nodeImage, img); };
+            this.imageCache.set(node.nodeImage, null);
+            return;
+        }
+        const img = this.imageCache.get(node.nodeImage);
+        if (img) {
             this.ctx.save();
             this.ctx.beginPath();
-            this.ctx.roundRect(startX, startY, stripeW + radius, actualH, [radius, 0, 0, radius]);
+            this.ctx.roundRect(p.x, p.y, w, h, 10 * s);
             this.ctx.clip();
-            this.ctx.fillStyle = stripeColor;
-            this.ctx.fillRect(startX, startY, stripeW, actualH);
+            this.ctx.drawImage(img, p.x, p.y, w, h);
             this.ctx.restore();
         }
 
-        // ---- TEXT ----
+        // LABEL BAR ABOVE
+        const barH = 22 * s;
+        const barY = p.y - barH - 4*s;
+        this.ctx.fillStyle = isLight ? 'rgba(255,255,255,0.9)' : 'rgba(15,17,26,0.9)';
+        this.ctx.beginPath();
+        this.ctx.roundRect(p.x, barY, w, barH, 4*s);
+        this.ctx.fill();
+        this.ctx.strokeStyle = isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)';
+        this.ctx.lineWidth = 1;
+        this.ctx.stroke();
+
+        this.ctx.fillStyle = isLight ? '#111827' : '#e2e8f0';
+        this.ctx.font = `600 ${12 * s}px Inter`;
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText(node.title, p.x + w/2, barY + barH/2 + 4*s);
+    }
+
+    drawNodeText(node, p, w, h, s, isLight) {
         const textColor = isLight ? '#111827' : '#e2e8f0';
         this.ctx.fillStyle = textColor;
-        this.ctx.font = `600 ${14 * this.camera.zoom}px Outfit`;
+        this.ctx.font = `600 ${14 * s}px Outfit`;
         this.ctx.textAlign = 'center';
         this.ctx.textBaseline = 'middle';
-        
         let text = node.title;
-        let limit = node.shape === 'diamond' ? 14 : 20;
-        if (text.length > limit) text = text.substring(0, limit-2) + '...';
-        
-        this.ctx.fillText(text, startX + actualW/2, startY + actualH/2);
+        if (text.length > 20) text = text.substring(0, 18) + '...';
+        this.ctx.fillText(text, p.x + w/2, p.y + h/2);
+    }
 
-        // V2.0 — Note count badge (jen rect, hlavně v data módu)
-        if (node.shape === 'rect' && node.notes && node.notes.length > 1) {
-            const badgeSize = 16 * this.camera.zoom;
-            const bx = startX + actualW - badgeSize - 4 * this.camera.zoom;
-            const by = startY + 4 * this.camera.zoom;
-            this.ctx.fillStyle = isLight ? 'rgba(59,130,246,0.15)' : 'rgba(0,240,255,0.15)';
-            this.ctx.beginPath();
-            this.ctx.arc(bx + badgeSize/2, by + badgeSize/2, badgeSize/2, 0, Math.PI*2);
-            this.ctx.fill();
-            this.ctx.fillStyle = isLight ? '#3b82f6' : '#00f0ff';
-            this.ctx.font = `700 ${9 * this.camera.zoom}px Inter`;
-            this.ctx.textAlign = 'center';
-            this.ctx.textBaseline = 'middle';
-            this.ctx.fillText(`${node.notes.length}`, bx + badgeSize/2, by + badgeSize/2);
+    drawResizeHandles(p, w, h, s) {
+        this.ctx.fillStyle = '#00f0ff';
+        const hs = 8 * s;
+        this.ctx.fillRect(p.x - hs/2, p.y - hs/2, hs, hs);
+        this.ctx.fillRect(p.x + w - hs/2, p.y - hs/2, hs, hs);
+        this.ctx.fillRect(p.x - hs/2, p.y + h - hs/2, hs, hs);
+        this.ctx.fillRect(p.x + w - hs/2, p.y + h - hs/2, hs, hs);
+    }
+
+    drawMinimap(project, isLight) {
+        const mw = 180;
+        const mh = 120;
+        const pad = 15;
+        const mx = this.canvas.width - mw - pad;
+        const my = this.canvas.height - mh - pad;
+
+        this.ctx.save();
+        this.ctx.translate(mx, my);
+        // Glass background
+        this.ctx.fillStyle = isLight ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.4)';
+        this.ctx.beginPath();
+        this.ctx.roundRect(0, 0, mw, mh, 10);
+        this.ctx.fill();
+        this.ctx.strokeStyle = isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)';
+        this.ctx.stroke();
+        this.ctx.clip();
+
+        // Scale factor based on all nodes bounds or fixed
+        const mapScale = 0.08;
+        this.ctx.scale(mapScale, mapScale);
+        this.ctx.translate(mw/2 / mapScale, mh/2 / mapScale);
+        this.ctx.translate(this.camera.x, this.camera.y);
+
+        // Draw nodes simplified
+        for (let [id, node] of project.nodes) {
+            const b = node.getBounds();
+            this.ctx.fillStyle = isLight ? '#cbd5e1' : '#334155';
+            if (this.appManager.selectedNodeIds.has(node.id)) this.ctx.fillStyle = '#3b82f6';
+            this.ctx.fillRect(b.x, b.y, b.w, b.h);
         }
 
-        // Pinned Flag 🚩
-        if (node.isPinned) {
-            this.ctx.font = `${16 * this.camera.zoom}px Inter`;
-            this.ctx.textAlign = 'center';
-            this.ctx.fillText("🚩", startX + 10*this.camera.zoom, startY - 5*this.camera.zoom);
-        }
+        // Draw current viewport
+        const vw = this.canvas.width / this.camera.zoom;
+        const vh = this.canvas.height / this.camera.zoom;
+        this.ctx.strokeStyle = '#00f0ff';
+        this.ctx.lineWidth = 10;
+        this.ctx.strokeRect(-this.camera.x, -this.camera.y, vw, vh);
 
-        // Hashtag z první noty
-        if (node.shape === 'rect' && node.notes && node.notes.length > 0 && node.notes[0].tags && node.notes[0].tags.length > 0) {
-            const firstTag = node.notes[0].tags[0];
-            this.ctx.fillStyle = isLight ? '#94a3b8' : '#475569';
-            this.ctx.font = `500 ${9 * this.camera.zoom}px Inter`;
-            this.ctx.textAlign = 'left';
-            this.ctx.fillText(firstTag, startX + 8*this.camera.zoom, startY + actualH - 10*this.camera.zoom);
-        }
+        this.ctx.restore();
     }
 
     animate = () => {
-        this.draw();
+        // Přeskočit draw, pokud je canvas skrytý (aktivní je SimulationRenderer)
+        if (this.canvas.style.display !== 'none') {
+            this.draw();
+        }
         requestAnimationFrame(this.animate);
     }
 }

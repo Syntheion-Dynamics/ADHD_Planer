@@ -41,15 +41,40 @@ export class ProjectNode {
         this.x = x;
         this.y = y;
         
+        // V2.1 — Resizing a nové tvary
+        // tvary: 'rect', 'diamond', 'circle', 'trapezoid', 'cylinder', 'image'
+        this.width = 180;
+        this.height = 60;
+        
         // V2.0 - Edges s rozšířenou paletou
         // edge objekt: { targetId, direction, color, customColor, label, thickness }
         this.edges = []; 
         
         // Stará kompatibilita (necháme prázdné a plní se při nahrávání starých grafů)
         this.childrenIds = []; 
-        
-        this.width = 180;
-        this.height = 60;
+    }
+
+    // V2.1 — Pomocník pro hitboxy a kreslení
+    getBounds() {
+        let w = this.width;
+        let h = this.height;
+        let x = this.x;
+        let y = this.y;
+
+        if (this.shape === 'diamond') {
+            w *= 1.5;
+            h *= 1.5;
+            x -= this.width * 0.25;
+            y -= this.height * 0.25;
+        } else if (this.shape === 'circle') {
+            // Circle is centered — hitbox is the bounding square of the circle
+            const r = Math.min(this.width, this.height) / 2;
+            x = this.x + this.width / 2 - r;
+            y = this.y + this.height / 2 - r;
+            w = r * 2;
+            h = r * 2;
+        }
+        return { x, y, w, h };
     }
 
     addNote() {

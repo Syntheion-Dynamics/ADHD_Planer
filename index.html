@@ -19,6 +19,7 @@
                 <button id="theme-toggle-btn" class="nav-btn" title="Přepnout Světlý/Tmavý režim">🌞 / 🌙</button>
                 <div class="search-box">
                     <input type="text" id="search-input" placeholder="Hledat uzly...">
+                    <span id="search-counter" class="search-counter" style="display:none;"></span>
                 </div>
                 <button id="save-btn" class="nav-btn" title="Ruční vynucení synchronizace">Uložit synchro</button>
             </div>
@@ -33,8 +34,13 @@
                 <!-- Canvas Context Menu -->
                 <div id="canvas-context-menu" class="context-menu hidden">
                     <div class="context-menu-section" id="ctx-empty-area">
-                        <button class="context-menu-item" data-action="new-rect">📦 Nový uzel (obdélník)</button>
-                        <button class="context-menu-item" data-action="new-diamond">🔶 Nový uzel (kosočtverec)</button>
+                        <button class="context-menu-item" data-action="new-rect">📦 Nový obdélník</button>
+                        <button class="context-menu-item" data-action="new-diamond">🔶 Nový kosočtverec</button>
+                        <button class="context-menu-item" data-action="new-circle">🔵 Nový kruh</button>
+                        <button class="context-menu-item" data-action="new-trapezoid">⏢ Nový lichoběžník</button>
+                        <button class="context-menu-item" data-action="new-cylinder">🛢️ Nový válec</button>
+                        <div class="context-menu-divider"></div>
+                        <button class="context-menu-item" data-action="new-image">🖼️ Vložit obrázek...</button>
                     </div>
                     <div class="context-menu-divider" id="ctx-divider-connect"></div>
                     <div class="context-menu-section" id="ctx-connect-section">
