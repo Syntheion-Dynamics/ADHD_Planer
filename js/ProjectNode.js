@@ -54,7 +54,7 @@ export class ProjectNode {
         this.childrenIds = []; 
     }
 
-    // V2.1 — Pomocník pro hitboxy a kreslení
+    // V2.2 — Pomocník pro hitboxy a kreslení (upraveno pro přesnější circle hitbox)
     getBounds() {
         let w = this.width;
         let h = this.height;
@@ -67,7 +67,6 @@ export class ProjectNode {
             x -= this.width * 0.25;
             y -= this.height * 0.25;
         } else if (this.shape === 'circle') {
-            // Circle is centered — hitbox is the bounding square of the circle
             const r = Math.min(this.width, this.height) / 2;
             x = this.x + this.width / 2 - r;
             y = this.y + this.height / 2 - r;
@@ -76,6 +75,35 @@ export class ProjectNode {
         }
         return { x, y, w, h };
     }
+
+    // V2.2 — vrací bod spojení na základě dané strany (top, bottom, left, right, center)
+    getSidePoint(side = "center") {
+        const b = this.getBounds();
+        switch (side) {
+            case "top":    return { x: b.x + b.w/2, y: b.y };
+            case "bottom": return { x: b.x + b.w/2, y: b.y + b.h };
+            case "left":   return { x: b.x, y: b.y + b.h/2 };
+            case "right":  return { x: b.x + b.w, y: b.y + b.h/2 };
+            default:       return { x: b.x + b.w/2, y: b.y + b.h/2 };
+        }
+    }
+
+    // V2.2 — vrací ID strany, která je nejblíže danému světovému bodu
+    getNearestSide(worldPoint) {
+        const sides = ["top", "bottom", "left", "right"];
+        let bestSide = "top";
+        let minDist = Infinity;
+        for (let s of sides) {
+            const p = this.getSidePoint(s);
+            const d = Math.sqrt((p.x - worldPoint.x)**2 + (p.y - worldPoint.y)**2);
+            if (d < minDist) {
+                minDist = d;
+                bestSide = s;
+            }
+        }
+        return bestSide;
+    }
+
 
     addNote() {
         const d = new Date().toISOString();
@@ -98,7 +126,8 @@ export class ProjectNode {
         }
     }
 
-    addEdge(targetId, direction = "->", color = "neutral", label = "", thickness = 1, customColor = null) {
+    // V2.2 — přidána podpora pro strany startSide a endSide
+    addEdge(targetId, direction = "->", color = "neutral", label = "", thickness = 1, customColor = null, startSide = "bottom", endSide = "top") {
         const existing = this.edges.find(e => e.targetId === targetId);
         if (existing) {
             existing.direction = direction;
@@ -106,8 +135,10 @@ export class ProjectNode {
             existing.label = label;
             existing.thickness = thickness;
             existing.customColor = customColor;
+            existing.startSide = startSide;
+            existing.endSide = endSide;
         } else {
-            this.edges.push({ targetId, direction, color, label, thickness, customColor });
+            this.edges.push({ targetId, direction, color, label, thickness, customColor, startSide, endSide });
         }
     }
 

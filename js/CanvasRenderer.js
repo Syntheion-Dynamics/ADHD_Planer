@@ -13,8 +13,11 @@ export class CanvasRenderer {
         this.isPanning = false;
         this.isResizing = false;
         this.isSelecting = false;
+        this.isConnectingDrag = false; // V2.2
         
         this.dragNode = null;
+        this.connectStartSide = null; // V2.2
+        this.connectCurrentPos = { x: 0, y: 0 }; // V2.2
         this.resizeDir = null; // 'nw', 'ne', 'sw', 'se'
         this.initialBounds = null; // V2.1
         this.aspectRatio = 1; // V2.1
@@ -65,6 +68,8 @@ export class CanvasRenderer {
             // 1. Check for Resize Handles
             if (this.appManager.selectedNodeIds.size === 1) {
                 const node = project.getNode(Array.from(this.appManager.selectedNodeIds)[0]);
+                
+                // Resize check
                 const handle = this.getResizeHandleAt(node, worldPos);
                 if (handle) {
                     this.isResizing = true;
@@ -73,6 +78,16 @@ export class CanvasRenderer {
                     this.initialBounds = { x: node.x, y: node.y, w: node.width, h: node.height };
                     this.aspectRatio = node.width / node.height;
                     this.appManager.pushHistory();
+                    return;
+                }
+
+                // Connect handle check (V2.2)
+                const connSide = this.getConnectHandleAt(node, worldPos);
+                if (connSide) {
+                    this.isConnectingDrag = true;
+                    this.dragNode = node;
+                    this.connectStartSide = connSide;
+                    this.connectCurrentPos = worldPos;
                     return;
                 }
             }
@@ -133,7 +148,12 @@ export class CanvasRenderer {
 
             if (this.isResizing && this.dragNode) {
                 this.handleResizeMove(this.dragNode, worldPos, e.shiftKey);
+            } else if (this.isConnectingDrag && this.dragNode) {
+                this.connectCurrentPos = worldPos;
             } else if (this.isDragging && this.dragNode) {
+                // Reset alignment lines
+                this.appManager.alignmentLines = { x: null, y: null };
+
                 // Move all selected nodes
                 for (let id of this.appManager.selectedNodeIds) {
                     const node = this.getProject().getNode(id);
@@ -141,6 +161,11 @@ export class CanvasRenderer {
                         node.x += dwx;
                         node.y += dwy;
                     }
+                }
+
+                // Smart Guides (V2.2) — only if one node dragged
+                if (this.appManager.selectedNodeIds.size === 1) {
+                    this.appManager.alignmentLines = this.appManager.getAlignmentLines(this.dragNode);
                 }
             } else if (this.isPanning) {
                 this.camera.x += dwx;
@@ -171,6 +196,28 @@ export class CanvasRenderer {
         });
 
         window.addEventListener('mouseup', (e) => {
+            if (this.isConnectingDrag && this.dragNode) {
+                // Finalize connection
+                const project = this.getProject();
+                let targetNode = null;
+                for (let node of project.nodes.values()) {
+                    if (node.id === this.dragNode.id) continue;
+                    const b = node.getBounds();
+                    if (worldPos.x >= b.x && worldPos.x <= b.x + b.w &&
+                        worldPos.y >= b.y && worldPos.y <= b.y + b.h) {
+                        targetNode = node;
+                        break;
+                    }
+                }
+
+                if (targetNode) {
+                    const endSide = targetNode.getNearestSide(worldPos);
+                    this.dragNode.addEdge(targetNode.id, "->", "neutral", "", 1, null, this.connectStartSide, endSide);
+                    this.appManager.pushHistory();
+                    this.appManager.toast.success("Spojeno!");
+                }
+            }
+
             if (this.isSelecting) {
                 this.finishSelection(this.toWorld(e.clientX - this.canvas.getBoundingClientRect().left, e.clientY - this.canvas.getBoundingClientRect().top));
             }
@@ -192,8 +239,11 @@ export class CanvasRenderer {
             this.isPanning = false;
             this.isResizing = false;
             this.isSelecting = false;
+            this.isConnectingDrag = false;
             this.dragNode = null;
             this.resizeDir = null;
+            this.connectStartSide = null;
+
         });
 
         this.canvas.addEventListener('wheel', (e) => {
@@ -215,13 +265,24 @@ export class CanvasRenderer {
 
     getResizeHandleAt(node, worldPos) {
         const b = node.getBounds();
-        const s = 10; // Handle size
+        const s = 12 / this.camera.zoom; // Handle size sensitive to zoom
         if (Math.abs(worldPos.x - b.x) < s && Math.abs(worldPos.y - b.y) < s) return 'nw';
         if (Math.abs(worldPos.x - (b.x+b.w)) < s && Math.abs(worldPos.y - b.y) < s) return 'ne';
         if (Math.abs(worldPos.x - b.x) < s && Math.abs(worldPos.y - (b.y+b.h)) < s) return 'sw';
         if (Math.abs(worldPos.x - (b.x+b.w)) < s && Math.abs(worldPos.y - (b.y+b.h)) < s) return 'se';
         return null;
     }
+
+    getConnectHandleAt(node, worldPos) {
+        const sides = ["top", "bottom", "left", "right"];
+        const s = 12 / this.camera.zoom;
+        for (let side of sides) {
+            const p = node.getSidePoint(side);
+            if (Math.abs(worldPos.x - p.x) < s && Math.abs(worldPos.y - p.y) < s) return side;
+        }
+        return null;
+    }
+
 
     handleResizeMove(node, worldPos, shiftKey) {
         const GRID = this.GRID_SIZE;
@@ -373,9 +434,9 @@ export class CanvasRenderer {
             for (let edge of node.edges) {
                 const child = project.getNode(edge.targetId);
                 if (child) {
-                    this.ctx.lineWidth = 2 * this.camera.zoom;
+                    this.ctx.lineWidth = (edge.thickness || 2) * this.camera.zoom;
                     this.ctx.strokeStyle = isLight ? `rgba(0,0,0,0.3)` : `rgba(255,255,255,0.2)`;
-                    this.drawBasicEdge(node, child);
+                    this.drawBasicEdge(node, child, edge);
                 }
             }
         }
@@ -401,26 +462,72 @@ export class CanvasRenderer {
             this.ctx.setLineDash([]);
         }
 
+        // 3.5 ACTIVE CONNECTION LINE (V2.2)
+        if (this.isConnectingDrag && this.dragNode) {
+            const p1 = this.toScreen(this.dragNode.getSidePoint(this.connectStartSide).x, this.dragNode.getSidePoint(this.connectStartSide).y);
+            const p2 = this.toScreen(this.connectCurrentPos.x, this.connectCurrentPos.y);
+            this.ctx.strokeStyle = '#00f0ff';
+            this.ctx.lineWidth = 2 * this.camera.zoom;
+            this.ctx.setLineDash([5, 5]);
+            this.ctx.beginPath();
+            this.ctx.moveTo(p1.x, p1.y);
+            this.ctx.lineTo(p2.x, p2.y);
+            this.ctx.stroke();
+            this.ctx.setLineDash([]);
+        }
+
+        // 3.7 SMART GUIDES (V2.2)
+        if (this.isDragging && this.appManager.alignmentLines.x !== null) {
+            const lx = this.toScreen(this.appManager.alignmentLines.x, 0).x;
+            this.ctx.strokeStyle = '#3b82f6';
+            this.ctx.setLineDash([5, 5]);
+            this.ctx.beginPath();
+            this.ctx.moveTo(lx, 0);
+            this.ctx.lineTo(lx, this.canvas.height);
+            this.ctx.stroke();
+            this.ctx.setLineDash([]);
+        }
+        if (this.isDragging && this.appManager.alignmentLines.y !== null) {
+            const ly = this.toScreen(0, this.appManager.alignmentLines.y).y;
+            this.ctx.strokeStyle = '#3b82f6';
+            this.ctx.setLineDash([5, 5]);
+            this.ctx.beginPath();
+            this.ctx.moveTo(0, ly);
+            this.ctx.lineTo(this.canvas.width, ly);
+            this.ctx.stroke();
+            this.ctx.setLineDash([]);
+        }
+
         // 4. MINIMAP
         this.drawMinimap(project, isLight);
     }
 
-    drawBasicEdge(parent, child) {
-        const pStart = parent.getBounds();
-        const pEnd = child.getBounds();
+    drawBasicEdge(parent, child, edge = {}) {
+        const p1w = parent.getSidePoint(edge.startSide || "bottom");
+        const p2w = child.getSidePoint(edge.endSide || "top");
         
-        const p1 = this.toScreen(pStart.x + pStart.w / 2, pStart.y + pStart.h);
-        const p2 = this.toScreen(pEnd.x + pEnd.w / 2, pEnd.y);
+        const p1 = this.toScreen(p1w.x, p1w.y);
+        const p2 = this.toScreen(p2w.x, p2w.y);
         
-        const ctrlY = (p1.y + p2.y) / 2;
-        const cp1 = { x: p1.x, y: ctrlY };
-        const cp2 = { x: p2.x, y: ctrlY };
+        let cp1, cp2;
+        const dist = Math.abs(p1.y - p2.y) / 2;
+        
+        // Simple bezier based on sides
+        if (edge.startSide === 'left' || edge.startSide === 'right') {
+            const dx = (p2.x - p1.x) / 2;
+            cp1 = { x: p1.x + dx, y: p1.y };
+            cp2 = { x: p2.x - dx, y: p2.y };
+        } else {
+            cp1 = { x: p1.x, y: p1.y + (p2.y > p1.y ? dist : -dist) };
+            cp2 = { x: p2.x, y: p2.y + (p2.y > p1.y ? -dist : dist) };
+        }
 
         this.ctx.beginPath();
         this.ctx.moveTo(p1.x, p1.y);
         this.ctx.bezierCurveTo(cp1.x, cp1.y, cp2.x, cp2.y, p2.x, p2.y);
         this.ctx.stroke();
     }
+
 
     drawNode(node, isLight) {
         const b = node.getBounds();
@@ -492,11 +599,13 @@ export class CanvasRenderer {
             this.drawNodeText(node, p, w, h, s, isLight);
         }
 
-        // RESIZE HANDLES (if only one selected)
+        // RESIZE HANDLES & CONNECT HANDLES (if only one selected)
         if (isSelected && this.appManager.selectedNodeIds.size === 1) {
             this.drawResizeHandles(p, w, h, s);
+            this.drawConnectHandles(node, s);
         }
     }
+
 
     drawNodeAsImage(node, p, w, h, s, isLight) {
         if (!this.imageCache.has(node.nodeImage)) {
@@ -547,11 +656,32 @@ export class CanvasRenderer {
     drawResizeHandles(p, w, h, s) {
         this.ctx.fillStyle = '#00f0ff';
         const hs = 8 * s;
+        this.ctx.shadowBlur = 5 * s;
+        this.ctx.shadowColor = '#00f0ff';
         this.ctx.fillRect(p.x - hs/2, p.y - hs/2, hs, hs);
         this.ctx.fillRect(p.x + w - hs/2, p.y - hs/2, hs, hs);
         this.ctx.fillRect(p.x - hs/2, p.y + h - hs/2, hs, hs);
         this.ctx.fillRect(p.x + w - hs/2, p.y + h - hs/2, hs, hs);
+        this.ctx.shadowBlur = 0;
     }
+
+    drawConnectHandles(node, s) {
+        const sides = ["top", "bottom", "left", "right"];
+        this.ctx.fillStyle = "#10b981";
+        this.ctx.strokeStyle = "#fff";
+        this.ctx.lineWidth = 1.5 * s;
+        const r = 5 * s;
+        
+        for (let side of sides) {
+            const pWorld = node.getSidePoint(side);
+            const p = this.toScreen(pWorld.x, pWorld.y);
+            this.ctx.beginPath();
+            this.ctx.arc(p.x, p.y, r, 0, Math.PI*2);
+            this.ctx.fill();
+            this.ctx.stroke();
+        }
+    }
+
 
     drawMinimap(project, isLight) {
         const mw = 180;

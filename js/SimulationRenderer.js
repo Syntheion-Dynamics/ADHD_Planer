@@ -10,7 +10,16 @@ export class SimulationRenderer {
         
         this.isPanning = false;
         this.isDragging = false;
+        this.isResizing = false; // V2.2
+        this.isConnectingDrag = false; // V2.2
+        
         this.dragNode = null;
+        this.resizeDir = null; // V2.2
+        this.initialBounds = null; // V2.2
+        this.aspectRatio = 1; // V2.2
+        this.connectStartSide = null; // V2.2
+        this.connectCurrentPos = { x: 0, y: 0 }; // V2.2
+
         this.lastMouse = { x: 0, y: 0 };
         this.hoveredNodeId = null;
 
@@ -53,6 +62,31 @@ export class SimulationRenderer {
             if (!project) return;
             this.appManager.hideContextMenu();
 
+            // 1. Check for Resize/Connect Handles (V2.2)
+            if (this.appManager.selectedNodeIds.size === 1) {
+                const node = project.getNode(Array.from(this.appManager.selectedNodeIds)[0]);
+                
+                const handle = this.getResizeHandleAt(node, worldPos);
+                if (handle) {
+                    this.isResizing = true;
+                    this.dragNode = node;
+                    this.resizeDir = handle;
+                    this.initialBounds = { x: node.x, y: node.y, w: node.width, h: node.height };
+                    this.aspectRatio = node.width / node.height;
+                    this.appManager.pushHistory();
+                    return;
+                }
+
+                const connSide = this.getConnectHandleAt(node, worldPos);
+                if (connSide) {
+                    this.isConnectingDrag = true;
+                    this.dragNode = node;
+                    this.connectStartSide = connSide;
+                    this.connectCurrentPos = worldPos;
+                    return;
+                }
+            }
+
             let clickedNode = null;
             const nodesArr = Array.from(project.nodes.values()).reverse();
             for (let node of nodesArr) {
@@ -70,12 +104,8 @@ export class SimulationRenderer {
                 this.dragNode = clickedNode;
                 this.appManager.pushHistory();
             } else {
-                if (e.shiftKey) {
-                    // Selection box logic not yet in SIM, but panning for now
-                } else {
-                    this.isPanning = true;
-                    this.appManager.selectNode(null);
-                }
+                this.isPanning = true;
+                this.appManager.selectNode(null);
             }
         });
 
@@ -88,7 +118,12 @@ export class SimulationRenderer {
             const dy = mouseY - this.lastMouse.y;
             this.lastMouse = { x: mouseX, y: mouseY };
 
-            if (this.isDragging && this.dragNode) {
+            if (this.isResizing && this.dragNode) {
+                this.handleResizeMove(this.dragNode, worldPos, e.shiftKey);
+            } else if (this.isConnectingDrag && this.dragNode) {
+                this.connectCurrentPos = worldPos;
+            } else if (this.isDragging && this.dragNode) {
+                this.appManager.alignmentLines = { x: null, y: null };
                 const dwx = dx / this.camera.zoom;
                 const dwy = dy / this.camera.zoom;
                 for (let id of this.appManager.selectedNodeIds) {
@@ -97,6 +132,9 @@ export class SimulationRenderer {
                         node.x += dwx;
                         node.y += dwy;
                     }
+                }
+                if (this.appManager.selectedNodeIds.size === 1) {
+                    this.appManager.alignmentLines = this.appManager.getAlignmentLines(this.dragNode);
                 }
             } else if (this.isPanning) {
                 this.camera.x += dx / this.camera.zoom;
@@ -117,20 +155,49 @@ export class SimulationRenderer {
             }
         });
 
-        window.addEventListener('mouseup', () => {
-            if (this.isDragging && this.dragNode) {
+        window.addEventListener('mouseup', (e) => {
+            const rect = this.canvas.getBoundingClientRect();
+            const worldPos = this.toWorld(e.clientX - rect.left, e.clientY - rect.top);
+
+            if (this.isConnectingDrag && this.dragNode) {
+                const project = this.getProject();
+                let targetNode = null;
+                for (let node of project.nodes.values()) {
+                    if (node.id === this.dragNode.id) continue;
+                    const b = node.getBounds();
+                    if (worldPos.x >= b.x && worldPos.x <= b.x + b.w &&
+                        worldPos.y >= b.y && worldPos.y <= b.y + b.h) {
+                        targetNode = node;
+                        break;
+                    }
+                }
+                if (targetNode) {
+                    const endSide = targetNode.getNearestSide(worldPos);
+                    this.dragNode.addEdge(targetNode.id, "->", "neutral", "", 1, null, this.connectStartSide, endSide);
+                    this.appManager.pushHistory();
+                    this.appManager.toast.success("Spojeno!");
+                }
+            }
+
+            if ((this.isDragging || this.isResizing) && this.dragNode) {
                 // Snap to grid
                 for (let id of this.appManager.selectedNodeIds) {
                     const node = this.getProject().getNode(id);
                     if (node) {
                         node.x = Math.round(node.x / this.GRID_SIZE) * this.GRID_SIZE;
                         node.y = Math.round(node.y / this.GRID_SIZE) * this.GRID_SIZE;
+                        node.width = Math.round(node.width / this.GRID_SIZE) * this.GRID_SIZE;
+                        node.height = Math.round(node.height / this.GRID_SIZE) * this.GRID_SIZE;
                     }
                 }
             }
             this.isDragging = false;
             this.isPanning = false;
+            this.isResizing = false;
+            this.isConnectingDrag = false;
             this.dragNode = null;
+            this.resizeDir = null;
+            this.connectStartSide = null;
         });
 
         this.canvas.addEventListener('wheel', (e) => {
@@ -185,8 +252,8 @@ export class SimulationRenderer {
         const project = this.getProject();
         if (!project) return;
 
-        // Sestavit set platných edgeKey — pro cleanup smazaných hran
         const validEdgeKeys = new Set();
+        const perfMode = this.appManager.performanceMode; // V2.2
 
         for (let [id, node] of project.nodes) {
             for (let edge of node.edges) {
@@ -196,9 +263,16 @@ export class SimulationRenderer {
                 if (!this.particles.has(edgeKey)) this.particles.set(edgeKey, []);
                 const parts = this.particles.get(edgeKey);
 
+                const maxParts = perfMode ? 2 : 5;
+                const chance = perfMode ? 0.02 : 0.05;
+
+                // Propagace statusu (V2.2) — Parent DONE posílá rychlejší částice
+                const isParentDone = node.status === 'done';
+                const speedMult = isParentDone ? 2.5 : 1.0;
+
                 // Přidat nové
-                if (parts.length < 5 && Math.random() < 0.05) {
-                    parts.push({ t: 0, speed: 0.2 + Math.random() * 0.3 });
+                if (parts.length < maxParts && Math.random() < chance) {
+                    parts.push({ t: 0, speed: (0.2 + Math.random() * 0.3) * speedMult, isSignal: isParentDone });
                 }
 
                 // Update
@@ -220,22 +294,29 @@ export class SimulationRenderer {
     // =============================================
     // HELPERS FOR DRAWING
     // =============================================
-    getEdgePoints(pId, cId) {
+    getEdgePoints(pId, cId, edge = {}) {
         const project = this.getProject();
         const pNode = project.getNode(pId);
         const cNode = project.getNode(cId);
         if (!pNode || !cNode) return null;
 
-        const b1 = pNode.getBounds();
-        const b2 = cNode.getBounds();
-
-        const p1 = this.toScreen(b1.x + b1.w/2, b1.y + b1.h);
-        const p2 = this.toScreen(b2.x + b2.w/2, b2.y);
-        const ctrlY = (p1.y + p2.y) / 2;
-        const cp1 = { x: p1.x, y: ctrlY };
-        const cp2 = { x: p2.x, y: ctrlY };
+        const p1 = this.toScreen(pNode.getSidePoint(edge.startSide || "bottom").x, pNode.getSidePoint(edge.startSide || "bottom").y);
+        const p2 = this.toScreen(cNode.getSidePoint(edge.endSide || "top").x, cNode.getSidePoint(edge.endSide || "top").y);
+        
+        let cp1, cp2;
+        const dist = Math.abs(p1.y - p2.y) / 2;
+        
+        if (edge.startSide === 'left' || edge.startSide === 'right') {
+            const dx = (p2.x - p1.x) / 2;
+            cp1 = { x: p1.x + dx, y: p1.y };
+            cp2 = { x: p2.x - dx, y: p2.y };
+        } else {
+            cp1 = { x: p1.x, y: p1.y + (p2.y > p1.y ? dist : -dist) };
+            cp2 = { x: p2.x, y: p2.y + (p2.y > p1.y ? -dist : dist) };
+        }
         return { p1, p2, cp1, cp2 };
     }
+
 
     bezierPoint(p0, p1, p2, p3, t) {
         const mt = 1 - t;
@@ -252,8 +333,10 @@ export class SimulationRenderer {
         this.ctx.translate(x, y);
         this.ctx.rotate(angle);
         this.ctx.fillStyle = color;
-        this.ctx.shadowBlur = 10;
-        this.ctx.shadowColor = color;
+        if (!this.appManager.performanceMode) {
+            this.ctx.shadowBlur = 10;
+            this.ctx.shadowColor = color;
+        }
         this.ctx.beginPath();
         this.ctx.moveTo(size, 0);
         this.ctx.lineTo(-size*0.7, -size*0.6);
@@ -262,6 +345,56 @@ export class SimulationRenderer {
         this.ctx.fill();
         this.ctx.restore();
     }
+
+    getResizeHandleAt(node, worldPos) {
+        const b = node.getBounds();
+        const s = 12 / this.camera.zoom;
+        if (Math.abs(worldPos.x - b.x) < s && Math.abs(worldPos.y - b.y) < s) return 'nw';
+        if (Math.abs(worldPos.x - (b.x+b.w)) < s && Math.abs(worldPos.y - b.y) < s) return 'ne';
+        if (Math.abs(worldPos.x - b.x) < s && Math.abs(worldPos.y - (b.y+b.h)) < s) return 'sw';
+        if (Math.abs(worldPos.x - (b.x+b.w)) < s && Math.abs(worldPos.y - (b.y+b.h)) < s) return 'se';
+        return null;
+    }
+
+    getConnectHandleAt(node, worldPos) {
+        const sides = ["top", "bottom", "left", "right"];
+        const s = 12 / this.camera.zoom;
+        for (let side of sides) {
+            const p = node.getSidePoint(side);
+            if (Math.abs(worldPos.x - p.x) < s && Math.abs(worldPos.y - p.y) < s) return side;
+        }
+        return null;
+    }
+
+    handleResizeMove(node, worldPos, shiftKey) {
+        const GRID = this.GRID_SIZE;
+        const b = this.initialBounds;
+        const isImage = node.shape === 'image';
+        const lockRatio = isImage ? !shiftKey : shiftKey;
+
+        if (this.resizeDir === 'se') {
+            node.width = Math.max(GRID, Math.round((worldPos.x - b.x) / GRID) * GRID);
+            node.height = Math.max(GRID, Math.round((worldPos.y - b.y) / GRID) * GRID);
+        } else if (this.resizeDir === 'nw') {
+            const oldRight = b.x + b.w;
+            const oldBottom = b.y + b.h;
+            node.x = Math.round(worldPos.x / GRID) * GRID;
+            node.y = Math.round(worldPos.y / GRID) * GRID;
+            node.width = Math.max(GRID, oldRight - node.x);
+            node.height = Math.max(GRID, oldBottom - node.y);
+        } else if (this.resizeDir === 'ne') {
+            const oldBottom = b.y + b.h;
+            node.y = Math.round(worldPos.y / GRID) * GRID;
+            node.width = Math.max(GRID, Math.round((worldPos.x - b.x) / GRID) * GRID);
+            node.height = Math.max(GRID, oldBottom - node.y);
+        } else if (this.resizeDir === 'sw') {
+            const oldRight = b.x + b.w;
+            node.x = Math.round(worldPos.x / GRID) * GRID;
+            node.width = Math.max(GRID, oldRight - node.x);
+            node.height = Math.max(GRID, Math.round((worldPos.y - b.y) / GRID) * GRID);
+        }
+    }
+
 
     // =============================================
     // MAIN DRAW
@@ -295,19 +428,60 @@ export class SimulationRenderer {
         for (let [id, node] of project.nodes) {
             this.drawSimNode(node);
         }
+
+        // 3. ACTIVE CONNECTION (V2.2)
+        if (this.isConnectingDrag && this.dragNode) {
+            const p1 = this.toScreen(this.dragNode.getSidePoint(this.connectStartSide).x, this.dragNode.getSidePoint(this.connectStartSide).y);
+            const p2 = this.toScreen(this.connectCurrentPos.x, this.connectCurrentPos.y);
+            this.ctx.strokeStyle = '#00f0ff';
+            this.ctx.lineWidth = 2 * this.camera.zoom;
+            this.ctx.setLineDash([5, 5]);
+            this.ctx.beginPath();
+            this.ctx.moveTo(p1.x, p1.y);
+            this.ctx.lineTo(p2.x, p2.y);
+            this.ctx.stroke();
+            this.ctx.setLineDash([]);
+        }
+
+        // 3.7 SMART GUIDES (V2.2)
+        if (this.isDragging && this.appManager.alignmentLines.x !== null) {
+            const lx = this.toScreen(this.appManager.alignmentLines.x, 0).x;
+            this.ctx.strokeStyle = '#00f0ff';
+            this.ctx.setLineDash([5, 5]);
+            this.ctx.beginPath();
+            this.ctx.moveTo(lx, 0);
+            this.ctx.lineTo(lx, this.canvas.height);
+            this.ctx.stroke();
+            this.ctx.setLineDash([]);
+        }
+        if (this.isDragging && this.appManager.alignmentLines.y !== null) {
+            const ly = this.toScreen(0, this.appManager.alignmentLines.y).y;
+            this.ctx.strokeStyle = '#00f0ff';
+            this.ctx.setLineDash([5, 5]);
+            this.ctx.beginPath();
+            this.ctx.moveTo(0, ly);
+            this.ctx.lineTo(this.canvas.width, ly);
+            this.ctx.stroke();
+            this.ctx.setLineDash([]);
+        }
     }
 
+
+
     drawSimEdge(parent, child, edge) {
-        const pts = this.getEdgePoints(parent.id, child.id);
+        const pts = this.getEdgePoints(parent.id, child.id, edge);
         if (!pts) return;
         const { p1, p2, cp1, cp2 } = pts;
+        const perf = this.appManager.performanceMode;
 
         const color = ProjectNode.resolveEdgeColor(edge);
         const thickness = (edge.thickness || 2) * this.camera.zoom;
 
         // Glow line
-        this.ctx.shadowBlur = 12 * this.camera.zoom;
-        this.ctx.shadowColor = color;
+        if (!perf) {
+            this.ctx.shadowBlur = 12 * this.camera.zoom;
+            this.ctx.shadowColor = color;
+        }
         this.ctx.strokeStyle = color;
         this.ctx.lineWidth = thickness;
         this.ctx.beginPath();
@@ -319,16 +493,19 @@ export class SimulationRenderer {
         // Particles
         const edgeKey = `${parent.id}-${child.id}`;
         const parts = this.particles.get(edgeKey) || [];
-        this.ctx.fillStyle = "#fff";
         for (let p of parts) {
             const px = this.bezierPoint(p1.x, cp1.x, cp2.x, p2.x, p.t);
             const py = this.bezierPoint(p1.y, cp1.y, cp2.y, p2.y, p.t);
-            this.ctx.shadowBlur = 8;
-            this.ctx.shadowColor = "#fff";
+            this.ctx.fillStyle = p.isSignal ? "#00f0ff" : "#fff";
+            if (!perf) {
+                this.ctx.shadowBlur = p.isSignal ? 15 : 8;
+                this.ctx.shadowColor = p.isSignal ? "#00f0ff" : "#fff";
+            }
             this.ctx.beginPath();
-            this.ctx.arc(px, py, thickness * 0.8, 0, Math.PI*2);
+            this.ctx.arc(px, py, thickness * (p.isSignal ? 1.2 : 0.8), 0, Math.PI*2);
             this.ctx.fill();
         }
+
 
         // Arrowhead at the end
         const tx = this.bezierTangent(p1.x, cp1.x, cp2.x, p2.x, 1);
@@ -381,8 +558,10 @@ export class SimulationRenderer {
         const pulse = isSelected ? Math.sin(this.glowPhase * 4) * 0.2 + 1 : 1;
         
         // Neon Glow
-        this.ctx.shadowBlur = (isSelected ? 25 : (isHovered ? 15 : 5)) * s * pulse;
-        this.ctx.shadowColor = isSelected ? "#00f0ff" : "rgba(0, 240, 255, 0.3)";
+        if (!this.appManager.performanceMode) {
+            this.ctx.shadowBlur = (isSelected ? 25 : (isHovered ? 15 : 5)) * s * pulse;
+            this.ctx.shadowColor = isSelected ? "#00f0ff" : "rgba(0, 240, 255, 0.3)";
+        }
 
         // Glass Body
         this.ctx.fillStyle = isSelected ? "rgba(30, 41, 59, 0.95)" : "rgba(15, 23, 42, 0.8)";
@@ -408,7 +587,36 @@ export class SimulationRenderer {
         if (node.statValue > 0) {
             this.drawStatTag(node, p, w, h, s);
         }
+
+        // HANDLES (V2.2)
+        if (isSelected && this.appManager.selectedNodeIds.size === 1) {
+            this.drawSimHandles(node, p, w, h, s);
+        }
     }
+
+    drawSimHandles(node, p, w, h, s) {
+        // Resize Handles
+        this.ctx.fillStyle = '#00f0ff';
+        const hs = 8 * s;
+        this.ctx.fillRect(p.x - hs/2, p.y - hs/2, hs, hs);
+        this.ctx.fillRect(p.x + w - hs/2, p.y - hs/2, hs, hs);
+        this.ctx.fillRect(p.x - hs/2, p.y + h - hs/2, hs, hs);
+        this.ctx.fillRect(p.x + w - hs/2, p.y + h - hs/2, hs, hs);
+
+        // Connection Dots
+        const sides = ["top", "bottom", "left", "right"];
+        this.ctx.fillStyle = "#10b981";
+        this.ctx.strokeStyle = "#fff";
+        this.ctx.lineWidth = 1 * s;
+        for (let side of sides) {
+            const sp = this.toScreen(node.getSidePoint(side).x, node.getSidePoint(side).y);
+            this.ctx.beginPath();
+            this.ctx.arc(sp.x, sp.y, 4*s, 0, Math.PI*2);
+            this.ctx.fill();
+            this.ctx.stroke();
+        }
+    }
+
 
     defineShapePath(node, p, w, h, s) {
         if (node.shape === 'rect' || node.shape === 'image') {

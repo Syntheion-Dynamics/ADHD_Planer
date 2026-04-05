@@ -32,6 +32,10 @@ class AppManager {
         this.contextMenuNodeId = null;
         
         this.editor = new EditorController(this);
+        
+        // V2.2 — Performance & Alignment
+        this.performanceMode = false;
+        this.alignmentLines = { x: null, y: null }; 
 
         this.setupUI();
         this.setupShortcuts();
@@ -52,6 +56,8 @@ class AppManager {
         const dataCanvas = document.getElementById('project-canvas');
         const simCanvas = document.getElementById('simulation-canvas');
         
+        this.updatePerformanceMode(); // V2.2 check
+
         if (this.currentProject && this.currentProject.mode === 'simulation') {
             dataCanvas.style.display = 'none';
             simCanvas.style.display = 'block';
@@ -62,6 +68,19 @@ class AppManager {
             this.canvasRenderer.resize();
         }
     }
+
+    // V2.2 — Auto-switch performance mode based on node count
+    updatePerformanceMode() {
+        if (!this.currentProject) return;
+        const count = this.currentProject.nodes.size;
+        const oldMode = this.performanceMode;
+        this.performanceMode = count > 100;
+        
+        if (oldMode !== this.performanceMode) {
+            this.toast.info(this.performanceMode ? "🚀 Performance mode AKTIVNÍ (>100 uzlů)" : "✨ Standardní grafika AKTIVNÍ");
+        }
+    }
+
 
     async initApp() {
         const loaded = await this.loadFromAPI();
@@ -654,6 +673,38 @@ class AppManager {
         const lastId = Array.from(this.selectedNodeIds).pop();
         return this.currentProject.getNode(lastId);
     }
+
+    // V2.2 — Smart Alignment Guides logic
+    getAlignmentLines(draggingNode) {
+        if (!this.currentProject || !draggingNode) return { x: null, y: null };
+        const threshold = 5;
+        let bestX = null;
+        let bestY = null;
+
+        for (let [id, node] of this.currentProject.nodes) {
+            if (id === draggingNode.id) continue;
+            
+            // Align X (Left, Center, Right)
+            const dx_left = Math.abs(draggingNode.x - node.x);
+            const dx_center = Math.abs((draggingNode.x + draggingNode.width/2) - (node.x + node.width/2));
+            const dx_right = Math.abs((draggingNode.x + draggingNode.width) - (node.x + node.width));
+            
+            if (dx_left < threshold) { draggingNode.x = node.x; bestX = node.x; }
+            else if (dx_center < threshold) { draggingNode.x = node.x + node.width/2 - draggingNode.width/2; bestX = node.x + node.width/2; }
+            else if (dx_right < threshold) { draggingNode.x = node.x + node.width - draggingNode.width; bestX = node.x + node.width; }
+
+            // Align Y (Top, Center, Bottom)
+            const dy_top = Math.abs(draggingNode.y - node.y);
+            const dy_center = Math.abs((draggingNode.y + draggingNode.height/2) - (node.y + node.height/2));
+            const dy_bottom = Math.abs((draggingNode.y + draggingNode.height) - (node.y + node.height));
+
+            if (dy_top < threshold) { draggingNode.y = node.y; bestY = node.y; }
+            else if (dy_center < threshold) { draggingNode.y = node.y + node.height/2 - draggingNode.height/2; bestY = node.y + node.height/2; }
+            else if (dy_bottom < threshold) { draggingNode.y = node.y + node.height - draggingNode.height; bestY = node.y + node.height; }
+        }
+        return { x: bestX, y: bestY };
+    }
+
 
     // =============================================
     // SEARCH
