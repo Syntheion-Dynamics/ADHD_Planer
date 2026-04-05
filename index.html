@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ADHD Planer</title>
+    <meta name="description" content="ADHD-friendly game project planner with visual mind-mapping, simulation mode, and rich notes.">
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=Outfit:wght@400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="app">
+        <!-- Top Tab Bar -->
+        <header id="tab-bar">
+            <div class="tabs-container" id="tabs-container"></div>
+            <button id="add-tab-btn" class="glow-btn">+ Nový Projekt</button>
+            <div class="header-controls">
+                <button id="project-settings-btn" class="nav-btn" title="Nastavení aktuálního projektu">⚙️ Projekt</button>
+                <button id="theme-toggle-btn" class="nav-btn" title="Přepnout Světlý/Tmavý režim">🌞 / 🌙</button>
+                <div class="search-box">
+                    <input type="text" id="search-input" placeholder="Hledat uzly...">
+                </div>
+                <button id="save-btn" class="nav-btn" title="Ruční vynucení synchronizace">Uložit synchro</button>
+            </div>
+        </header>
+
+        <div id="main-content">
+            <!-- Left Canvas Panel -->
+            <div id="canvas-panel">
+                <canvas id="project-canvas"></canvas>
+                <canvas id="simulation-canvas" style="display:none;"></canvas>
+                
+                <!-- Canvas Context Menu -->
+                <div id="canvas-context-menu" class="context-menu hidden">
+                    <div class="context-menu-section" id="ctx-empty-area">
+                        <button class="context-menu-item" data-action="new-rect">📦 Nový uzel (obdélník)</button>
+                        <button class="context-menu-item" data-action="new-diamond">🔶 Nový uzel (kosočtverec)</button>
+                    </div>
+                    <div class="context-menu-divider" id="ctx-divider-connect"></div>
+                    <div class="context-menu-section" id="ctx-connect-section">
+                        <button class="context-menu-item" data-action="connect-to-selected">🔗 Spojit s vybraným</button>
+                    </div>
+                    <div class="context-menu-divider" id="ctx-divider-node"></div>
+                    <div class="context-menu-section" id="ctx-node-actions">
+                        <button class="context-menu-item" data-action="toggle-shape">🔷 Změnit tvar</button>
+                        <button class="context-menu-item" data-action="add-child">➕ Přidat pod-uzel</button>
+                        <button class="context-menu-item" data-action="pin-node">📌 Připnout / Odepnout</button>
+                        <button class="context-menu-item ctx-danger" data-action="delete-node">🗑️ Smazat uzel</button>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="panel-resizer"></div>
+
+            <!-- Right Panel -->
+            <div id="editor-panel" class="glass-panel" style="width: 450px;">
+                <div id="no-node-overlay" class="overlay">
+                    <div class="overlay-content">
+                        <div class="overlay-icon">🎯</div>
+                        <h3>Vyber uzel z plátna</h3>
+                        <p class="overlay-hint">Klikni na uzel nebo stiskni <kbd>N</kbd> pro nový</p>
+                    </div>
+                </div>
+
+                <div class="editor-header">
+                    <input type="text" id="node-title-input" placeholder="Název uzlu...">
+                    
+                    <!-- STAT ROW -->
+                    <div class="node-settings-row">
+                        <select id="node-status-select" class="nav-btn" title="Status uzlu">
+                            <option value="none">Bez statusu</option>
+                            <option value="todo">TODO (Plánováno)</option>
+                            <option value="progress">IN PROGRESS (V řešení)</option>
+                            <option value="done">DONE (Hotovo)</option>
+                            <option value="blocked">BLOCKED (Zablokováno)</option>
+                        </select>
+                        <input type="number" step="0.1" id="node-stat-input" class="modern-input stat-input hidden" placeholder="Statut/Hodnota (např. 1.5)">
+                        <button id="node-pin-btn" class="icon-btn nav-btn" title="Připnout 'Pokračuj Zde' vlaječku">🚩</button>
+                    </div>
+
+                    <div class="editor-header-actions">
+                        <button id="add-child-btn" class="action-btn cyan-btn" title="Přidat uzel pod tento">+ Pod-uzel</button>
+                        <button id="connect-node-btn" class="action-btn nav-btn" title="Vytvořit spojnici k jinému uzlu">🔗 Spojit</button>
+                        <button id="toggle-shape-btn" class="action-btn nav-btn" title="Změnit tvar (Obdélník/Kosočtverec)">🔶 Tvar</button>
+                        <button id="node-image-btn" class="action-btn nav-btn" title="Nastavit thumbnail obrázek uzlu (Simulace)" style="display:none;">🖼️ Obr.</button>
+                        <input type="file" id="node-image-input" style="display:none;" accept="image/*">
+                        <button id="delete-node-btn" class="action-btn danger-btn" title="Smazat uzel a odpojit">Smazat</button>
+                    </div>
+                    
+                    <!-- Node image preview -->
+                    <img id="node-image-preview" class="node-image-preview" style="display:none;" alt="Node thumbnail">
+                </div>
+
+                <!-- EDGES MANAGEMENT -->
+                <div id="edges-container" class="edges-container hidden">
+                    <div class="notes-list-header" style="background: transparent;">
+                        <h4>🔗 Vazby (Vliv)</h4>
+                    </div>
+                    <div id="edges-list" class="notes-list" style="max-height: 150px;">
+                    </div>
+                </div>
+
+                <!-- NOTES LIST -->
+                <div class="notes-list-container">
+                    <div class="notes-list-header">
+                        <h4>Poznámky</h4>
+                        <button id="add-note-btn" class="small-btn">+ Nová poznámka</button>
+                    </div>
+                    <div id="notes-list" class="notes-list">
+                    </div>
+                </div>
+
+                <div class="note-editor-container">
+                    <div id="editor-toolbar">
+                        <button data-cmd="bold" title="Tučně" class="format-btn"><b>B</b></button>
+                        <button data-cmd="italic" title="Kurzíva" class="format-btn"><i>I</i></button>
+                        <button data-cmd="insertUnorderedList" title="Odrážky" class="format-btn">• Seznam</button>
+                        <button id="image-upload-btn" title="Vložit obrázek" class="format-btn">🖼️</button>
+                        <input type="file" id="image-file-input" style="display:none;" accept="image/*">
+                        
+                        <div class="divider"></div>
+                        <select id="format-select" class="format-select">
+                            <option value="p">¶ Text</option>
+                            <option value="h1">Nadpis H1</option>
+                            <option value="h2">Nadpis H2</option>
+                            <option value="h3">Nadpis H3</option>
+                        </select>
+                    </div>
+                    <div id="rich-editor" contenteditable="true" placeholder="Začni psát obsah poznámky sem..."></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Properties Modal -->
+    <div id="properties-modal" class="modal-overlay hidden">
+        <div class="modal-content glass-panel">
+            <h3 style="margin-bottom: 15px; font-family: 'Outfit';">Vlastnosti Poznámky</h3>
+            <div class="form-group">
+                <label>Název:</label>
+                <input type="text" id="prop-title-input" class="modern-input">
+            </div>
+            <div class="form-group">
+                <label># Hashtagy (oddělené mezerou):</label>
+                <input type="text" id="prop-tags-input" placeholder="#gameplay #idea" class="modern-input">
+            </div>
+            <div class="timestamps-group">
+                <div><small><strong>Vytvořeno:</strong> <span id="prop-created-span"></span></small></div>
+                <div><small><strong>Naposledy změněno:</strong> <span id="prop-updated-span"></span></small></div>
+            </div>
+            <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 15px;">
+                <button id="prop-close-btn" class="nav-btn">Zavřít</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Project Settings Modal -->
+    <div id="project-settings-modal" class="modal-overlay hidden">
+        <div class="modal-content glass-panel" style="border: 1px solid var(--neon-cyan);">
+            <h3 style="margin-bottom: 15px; font-family: 'Outfit'; color: var(--neon-cyan);">Nastavení Projektu</h3>
+            <div class="form-group">
+                <label>Název projektu:</label>
+                <input type="text" id="proj-name-input" class="modern-input">
+            </div>
+            <div class="form-group">
+                <label>Mód vykreslování:</label>
+                <select id="proj-mode-select" class="modern-input">
+                    <option value="data">📁 DATA (Klasická Mind-mapa a struktura)</option>
+                    <option value="simulation">🎲 SIMULACE (RPG vazby, neonové hrany, particle flow)</option>
+                </select>
+                <small style="display:block; margin-top:5px; color:var(--text-muted);">
+                    Simulace přidá animované neonové hrany s particle efektem, barevnou logiku vlivů, šípky podle křivky a detailní konfiguraci spojnic.
+                </small>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 25px;">
+                <button id="proj-delete-btn" class="danger-btn" style="padding:8px 16px;">🗑️ Smazat projekt</button>
+                <div style="display: flex; gap: 10px;">
+                    <button id="proj-save-btn" class="cyan-btn" style="padding:8px 16px;">Uložit Nastavení</button>
+                    <button id="proj-close-btn" class="nav-btn">Zrušit</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Global Connection Mode UI -->
+    <div id="connect-overlay" class="overlay hidden" style="pointer-events: none; background: rgba(0,0,0,0.3); z-index: 1000; justify-content: flex-start; padding-top: 20px;">
+        <h2 style="color: var(--neon-cyan); text-shadow: 0 0 10px var(--neon-cyan); pointer-events: none; background: rgba(0,0,0,0.5); padding: 10px 20px; border-radius: 12px; font-family: 'Outfit'; border: 1px solid var(--neon-cyan);">
+            Nyní klikni na CÍLOVÝ UZEL (nebo stiskni ESC pro zrušení)
+        </h2>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toast-container"></div>
+
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+# Ignore user project data
+Projects/*.json
+!Projects/.gitkeep
+
+# Python temporary files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Editor and OS temporary files
+.vscode/
+.history/
+.DS_Store
+Thumbs.db
