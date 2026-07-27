@@ -19,14 +19,25 @@ export class ToastManager {
             info: 'ℹ️'
         };
         
-        toast.innerHTML = `
-            <div class="toast-icon">${icons[type] || icons.info}</div>
-            <div class="toast-message">${message}</div>
-            <div class="toast-progress">
-                <div class="toast-progress-bar" style="animation-duration: ${duration}ms;"></div>
-            </div>
-        `;
-        
+        const icon = document.createElement('div');
+        icon.className = 'toast-icon';
+        icon.textContent = icons[type] || icons.info;
+
+        const msg = document.createElement('div');
+        msg.className = 'toast-message';
+        msg.textContent = String(message ?? '');
+
+        const progress = document.createElement('div');
+        progress.className = 'toast-progress';
+        const bar = document.createElement('div');
+        bar.className = 'toast-progress-bar';
+        bar.style.animationDuration = `${duration}ms`;
+        progress.appendChild(bar);
+
+        toast.appendChild(icon);
+        toast.appendChild(msg);
+        toast.appendChild(progress);
+
         this.container.appendChild(toast);
         
         // Trigger entrance animation

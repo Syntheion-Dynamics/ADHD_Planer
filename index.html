@@ -6,16 +6,28 @@
     <title>ADHD Planer</title>
     <meta name="description" content="ADHD-friendly game project planner with visual mind-mapping, simulation mode, and rich notes.">
     <link rel="stylesheet" href="style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=Outfit:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="fonts/fonts.css">
 </head>
 <body>
     <div id="app">
+        <!-- Brain Dump Banner (zobrazí se při návratu k projektu) -->
+        <div id="brain-dump-banner" class="brain-dump-banner hidden">
+            <span class="brain-dump-banner-icon">🧠</span>
+            <div class="brain-dump-banner-content">
+                <span class="brain-dump-banner-label">Zápisník z minulé relace:</span>
+                <span id="brain-dump-banner-text"></span>
+            </div>
+            <button id="brain-dump-banner-close" class="brain-dump-banner-close" title="Zavřít">×</button>
+        </div>
+
         <!-- Top Tab Bar -->
         <header id="tab-bar">
             <div class="tabs-container" id="tabs-container"></div>
             <button id="add-tab-btn" class="glow-btn">+ Nový Projekt</button>
             <div class="header-controls">
-                <button id="project-settings-btn" class="nav-btn" title="Nastavení aktuálního projektu">⚙️ Projekt</button>
+                <button id="app-settings-btn" class="nav-btn" title="Nastavení aplikace a export">⚙️ Aplikace</button>
+                <button id="master-doc-toggle-btn" class="nav-btn" title="Zobrazit/Skrýt hlavní dokument vedle canvasu">📄 Dokument</button>
+                <button id="project-settings-btn" class="nav-btn" title="Nastavení aktuálního projektu">📁 Projekt</button>
                 <button id="theme-toggle-btn" class="nav-btn" title="Přepnout Světlý/Tmavý režim">🌞 / 🌙</button>
                 <div class="search-box">
                     <input type="text" id="search-input" placeholder="Hledat uzly...">
@@ -26,10 +38,40 @@
         </header>
 
         <div id="main-content">
-            <!-- Left Canvas Panel -->
+            <!-- Hlavní dokument (levý panel) -->
+            <div id="master-doc-panel" class="glass-panel master-doc-glass">
+                <div class="master-doc-header">
+                    <span class="master-doc-title-label">Hlavní dokument</span>
+                    <div class="master-doc-header-actions">
+                        <input type="file" id="master-doc-import-input" accept=".pdf,.odt,application/pdf,application/vnd.oasis.opendocument.text" style="display:none;">
+                        <button type="button" id="master-doc-import-btn" class="small-btn" title="Importovat PDF nebo ODT">📥 Import</button>
+                        <button type="button" id="master-doc-node-link-btn" class="small-btn" title="Vložit odkaz na vybraný uzel">🔗 Uzel</button>
+                        <button type="button" id="master-doc-pdf-toggle" class="small-btn hidden" title="Přepnout náhled PDF">👁 PDF</button>
+                    </div>
+                </div>
+                <div id="master-pdf-preview-wrap" class="master-pdf-preview-wrap hidden">
+                    <iframe id="master-pdf-iframe" class="master-pdf-iframe" title="Náhled PDF"></iframe>
+                </div>
+                <div id="master-editor-toolbar" class="master-editor-toolbar">
+                    <button type="button" data-master-cmd="bold" class="format-btn" title="Tučně"><b>B</b></button>
+                    <button type="button" data-master-cmd="italic" class="format-btn" title="Kurzíva"><i>I</i></button>
+                    <button type="button" data-master-cmd="insertUnorderedList" class="format-btn" title="Odrážky">• Seznam</button>
+                    <select id="master-format-select" class="format-select" title="Blok">
+                        <option value="p">¶ Text</option>
+                        <option value="h1">H1</option>
+                        <option value="h2">H2</option>
+                        <option value="h3">H3</option>
+                    </select>
+                </div>
+                <div id="master-rich-editor" class="master-rich-editor" contenteditable="true" spellcheck="true" data-placeholder="Sem vloží import, nebo piš vlastní text…"></div>
+            </div>
+            <div id="master-panel-resizer" class="master-panel-resizer" title="Změnit šířku"></div>
+
+            <!-- Canvas -->
             <div id="canvas-panel">
                 <canvas id="project-canvas"></canvas>
                 <canvas id="simulation-canvas" style="display:none;"></canvas>
+                <div id="sticky-inline-edit" class="sticky-inline-edit hidden" contenteditable="true" spellcheck="true"></div>
                 
                 <!-- Canvas Context Menu -->
                 <div id="canvas-context-menu" class="context-menu hidden">
@@ -37,8 +79,9 @@
                         <button class="context-menu-item" data-action="new-rect">📦 Nový obdélník</button>
                         <button class="context-menu-item" data-action="new-diamond">🔶 Nový kosočtverec</button>
                         <button class="context-menu-item" data-action="new-circle">🔵 Nový kruh</button>
-                        <button class="context-menu-item" data-action="new-trapezoid">⏢ Nový lichoběžník</button>
-                        <button class="context-menu-item" data-action="new-cylinder">🛢️ Nový válec</button>
+                        <button class="context-menu-item" data-action="new-hexagon">⬡ Nový šestiúhelník</button>
+                        <button class="context-menu-item" data-action="new-pill">💊 Nová pilulka</button>
+                        <button class="context-menu-item" data-action="new-sticky">🗒️ Nové sticky</button>
                         <div class="context-menu-divider"></div>
                         <button class="context-menu-item" data-action="new-image">🖼️ Vložit obrázek...</button>
                     </div>
@@ -46,17 +89,40 @@
                     <div class="context-menu-section" id="ctx-connect-section">
                         <button class="context-menu-item" data-action="connect-to-selected">🔗 Spojit s vybraným</button>
                     </div>
+                    <div class="context-menu-divider" id="ctx-divider-edge"></div>
+                    <div class="context-menu-section" id="ctx-edge-actions">
+                        <button class="context-menu-item ctx-danger" data-action="delete-edge">🗑️ Smazat spojení</button>
+                        <div class="context-menu-submenu-title">Změnit barvu spoje:</div>
+                        <div class="context-menu-colors" id="ctx-edge-colors"></div>
+                    </div>
                     <div class="context-menu-divider" id="ctx-divider-node"></div>
                     <div class="context-menu-section" id="ctx-node-actions">
                         <button class="context-menu-item" data-action="toggle-shape">🔷 Změnit tvar</button>
+                        <div class="context-menu-submenu-title">Barva rámečku:</div>
+                        <div class="context-menu-colors" id="ctx-node-colors"></div>
                         <button class="context-menu-item" data-action="add-child">➕ Přidat pod-uzel</button>
                         <button class="context-menu-item" data-action="pin-node">📌 Připnout / Odepnout</button>
+                        <button class="context-menu-item" data-action="add-to-timeline">📅 Přidat do Timeline</button>
                         <button class="context-menu-item ctx-danger" data-action="delete-node">🗑️ Smazat uzel</button>
                     </div>
                 </div>
-            </div>
-            
-            <div id="panel-resizer"></div>
+
+                <!-- Timeline Panel — overlay na spodu canvas-panel, z-index nad canvasem -->
+                <div id="timeline-panel" class="timeline-panel hidden">
+                    <div id="timeline-resizer" class="timeline-resizer"></div>
+                    <div class="timeline-header">
+                        <span class="timeline-title">📅 Timeline</span>
+                        <div class="timeline-header-controls">
+                            <button id="timeline-add-event-btn" class="small-btn" title="Přidat nový event">+ Event</button>
+                            <button id="timeline-settings-btn" class="small-btn" title="Nastavení timeline">⚙️</button>
+                            <button id="timeline-toggle-btn" class="icon-btn" title="Skrýt/Zobrazit">▼</button>
+                        </div>
+                    </div>
+                    <canvas id="timeline-canvas"></canvas>
+                </div>
+            </div><!-- /#canvas-panel -->
+
+        <div id="panel-resizer"></div>
 
             <!-- Right Panel -->
             <div id="editor-panel" class="glass-panel" style="width: 450px;">
@@ -70,6 +136,15 @@
 
                 <div class="editor-header">
                     <input type="text" id="node-title-input" placeholder="Název uzlu...">
+                    <div id="sticky-created-hint" class="sticky-created-hint hidden" aria-live="polite"></div>
+                    <div id="sticky-appearance-row" class="sticky-appearance-row hidden">
+                        <span class="sticky-appearance-label">Vzhled sticky na plátně</span>
+                        <div class="sticky-appearance-pickers">
+                            <label>Pozadí <input type="color" id="sticky-bg-color" class="sticky-color-input" title="Barva pozadí bločku"></label>
+                            <label>Text <input type="color" id="sticky-text-color" class="sticky-color-input" title="Titulek, tělo poznámky a datum"></label>
+                            <button type="button" id="sticky-colors-reset" class="small-btn" title="Podle světlého/tmavého tématu">Výchozí téma</button>
+                        </div>
+                    </div>
                     
                     <!-- STAT ROW -->
                     <div class="node-settings-row">
@@ -81,6 +156,9 @@
                             <option value="blocked">BLOCKED (Zablokováno)</option>
                         </select>
                         <input type="number" step="0.1" id="node-stat-input" class="modern-input stat-input hidden" placeholder="Statut/Hodnota (např. 1.5)">
+                        <input type="number" id="node-width-input" class="modern-input stat-input" style="width: 70px;" placeholder="W" title="Manuální Šířka">
+                        <input type="number" id="node-height-input" class="modern-input stat-input" style="width: 70px;" placeholder="H" title="Manuální Výška">
+                        <input type="number" id="node-font-size-input" class="modern-input stat-input" style="width: 60px;" placeholder="Aa" title="Velikost písma uzlu (8–32)" min="8" max="32">
                         <button id="node-pin-btn" class="icon-btn nav-btn" title="Připnout 'Pokračuj Zde' vlaječku">🚩</button>
                     </div>
 
@@ -109,8 +187,12 @@
                 <!-- NOTES LIST -->
                 <div class="notes-list-container">
                     <div class="notes-list-header">
-                        <h4>Poznámky</h4>
-                        <button id="add-note-btn" class="small-btn">+ Nová poznámka</button>
+                        <h4 id="notes-section-title">Poznámky</h4>
+                        <div class="notebook-toolbar">
+                            <button id="notes-mode-btn" class="small-btn">Node Notes</button>
+                            <button id="notebook-mode-btn" class="small-btn">Notebook</button>
+                            <button id="add-note-btn" class="small-btn">+ Nová poznámka</button>
+                        </div>
                     </div>
                     <div id="notes-list" class="notes-list">
                     </div>
@@ -149,6 +231,12 @@
             <div class="form-group">
                 <label># Hashtagy (oddělené mezerou):</label>
                 <input type="text" id="prop-tags-input" placeholder="#gameplay #idea" class="modern-input">
+                <div style="display: flex; gap: 5px; flex-wrap: wrap; margin-top: 8px;" id="prop-quick-tags">
+                    <button class="small-btn" data-tag="#napad">💡 Nápad</button>
+                    <button class="small-btn" data-tag="#rozhodnuto">🟢 Rozhodnuto</button>
+                    <button class="small-btn" data-tag="#zamitnuto">🔴 Zamítnuto</button>
+                    <button class="small-btn" data-tag="#proc">🧠 Proč?</button>
+                </div>
             </div>
             <div class="timestamps-group">
                 <div><small><strong>Vytvořeno:</strong> <span id="prop-created-span"></span></small></div>
@@ -156,6 +244,60 @@
             </div>
             <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 15px;">
                 <button id="prop-close-btn" class="nav-btn">Zavřít</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- App Settings Modal -->
+    <div id="app-settings-modal" class="modal-overlay hidden">
+        <div class="modal-content glass-panel" style="border: 1px solid var(--neon-cyan); max-width: 440px;">
+            <h3 style="margin-bottom: 15px; font-family: 'Outfit'; color: var(--neon-cyan);">Nastavení aplikace</h3>
+            <div class="form-group">
+                <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer;">
+                    <input type="checkbox" id="app-set-tab-leave" style="width:18px; height:18px; accent-color:var(--neon-cyan); cursor:pointer; flex-shrink:0; margin-top:2px;">
+                    <span>Připomínka při opuštění záložky prohlížeče<br><small style="color:var(--text-muted); font-weight:400;">Krátký upozornění, když přepneš na jiný tab nebo minimalizuješ okno.</small></span>
+                </label>
+            </div>
+            <div class="form-group">
+                <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer;">
+                    <input type="checkbox" id="app-set-tab-return" style="width:18px; height:18px; accent-color:var(--neon-cyan); cursor:pointer; flex-shrink:0; margin-top:2px;">
+                    <span>Připomínka při návratu na Planer<br><small style="color:var(--text-muted); font-weight:400;">Jemné přivítání, když se vrátíš na tuto záložku.</small></span>
+                </label>
+            </div>
+            <div class="form-group">
+                <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+                    <input type="checkbox" id="app-set-snap-grid" style="width:18px; height:18px; accent-color:var(--neon-cyan); cursor:pointer;">
+                    <span>Přichytávání uzlů k mřížce (snapping)</span>
+                </label>
+                <small style="display:block; margin-top:5px; color:var(--text-muted); padding-left:28px;">Stejné jako klávesa <kbd>G</kbd> — lze kdykoli přepnout.</small>
+            </div>
+            <div class="form-group">
+                <label for="app-set-ui-style" style="display:block; margin-bottom:6px; color:var(--text-muted); font-size:0.88rem;">Vzhled rozhraní</label>
+                <select id="app-set-ui-style" class="modern-input" style="width:100%; padding:8px;">
+                    <option value="neon">Neon (modré zvýraznění)</option>
+                    <option value="gray">Klasická šedá</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="app-set-font" style="display:block; margin-bottom:6px; color:var(--text-muted); font-size:0.88rem;">Písmo aplikace</label>
+                <select id="app-set-font" class="modern-input" style="width:100%; padding:8px;">
+                    <option value="inter">Inter</option>
+                    <option value="system">Systémové (Segoe UI / San Francisco)</option>
+                    <option value="serif">Serif (Georgia)</option>
+                    <option value="mono">Monospace (Consolas)</option>
+                </select>
+                <small style="display:block; margin-top:6px; color:var(--text-muted); font-size:0.8rem;">Platí pro rozhraní i text sticky na plátně (canvas).</small>
+            </div>
+            <div class="form-group" style="border-top:1px solid var(--border-glass); padding-top:14px; margin-top:8px;">
+                <label style="display:block; margin-bottom:8px; color:var(--text-muted); font-size:0.88rem;">Záloha dat</label>
+                <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:10px; line-height:1.45;">
+                    Stáhne všechny otevřené projekty jako jeden JSON. Obrázky zůstávají v odkazech (složka <code style="font-size:0.8rem;">Images/</code>) — text hlavního dokumentu je v souborech <code style="font-size:0.8rem;">Projects/*.master.html</code>, importované PDF v <code style="font-size:0.8rem;">Documents/</code>. Pro úplnou zálohu zkopíruj i tyto složky.
+                </p>
+                <button type="button" id="app-export-btn" class="cyan-btn" style="padding:8px 16px;">Stáhnout export (JSON)</button>
+            </div>
+            <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px;">
+                <button id="app-settings-save-btn" class="cyan-btn" style="padding:8px 16px;">Uložit nastavení</button>
+                <button id="app-settings-close-btn" class="nav-btn">Zavřít</button>
             </div>
         </div>
     </div>
@@ -172,12 +314,22 @@
                 <label>Mód vykreslování:</label>
                 <select id="proj-mode-select" class="modern-input">
                     <option value="data">📁 DATA (Klasická Mind-mapa a struktura)</option>
-                    <option value="simulation">🎲 SIMULACE (RPG vazby, neonové hrany, particle flow)</option>
+                    <option value="simulation">🎲 SIMULACE — experimental / beta</option>
                 </select>
                 <small style="display:block; margin-top:5px; color:var(--text-muted);">
-                    Simulace přidá animované neonové hrany s particle efektem, barevnou logiku vlivů, šípky podle křivky a detailní konfiguraci spojnic.
+                    Simulace je v1 označená jako <strong>experimental</strong> (RPG vazby, neonové hrany, particle flow). Pro běžnou práci doporučujeme mód DATA.
                 </small>
             </div>
+            <div class="form-group" id="proj-timeline-group">
+                <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+                    <input type="checkbox" id="proj-timeline-enabled" style="width:18px; height:18px; accent-color:var(--neon-cyan); cursor:pointer;">
+                    <span>📅 Zobrazit Timeline panel (časová osa)</span>
+                </label>
+                <small style="display:block; margin-top:5px; color:var(--text-muted); padding-left:28px;">
+                    Zobrazí časovou osu ve spodní části plátna. Uzly přidáš do timeline přes pravý klik → "Přidat do Timeline".
+                </small>
+            </div>
+
             <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 25px;">
                 <button id="proj-delete-btn" class="danger-btn" style="padding:8px 16px;">🗑️ Smazat projekt</button>
                 <div style="display: flex; gap: 10px;">
@@ -197,6 +349,155 @@
 
     <!-- Toast Container -->
     <div id="toast-container"></div>
+
+    <!-- Onboarding (první start) -->
+    <div id="onboarding-modal" class="modal-overlay hidden">
+        <div class="modal-content glass-panel onboarding-modal-content">
+            <h3 class="onboarding-title">Vítej v ADHD Planeru</h3>
+            <p class="onboarding-lead">Rychlý start — tři věci stačí:</p>
+            <ul class="onboarding-list">
+                <li><kbd>Pravý klik</kbd> na plátno = nový uzel</li>
+                <li><kbd>T</kbd> = sticky poznámka</li>
+                <li><kbd>Ctrl+S</kbd> / „Uložit synchro“ = uložit projekt</li>
+            </ul>
+            <p class="onboarding-hint">Timeline zapneš v Nastavení projektu. Simulace je experimental.</p>
+            <div style="display:flex; justify-content:flex-end; margin-top:20px;">
+                <button type="button" id="onboarding-ok-btn" class="cyan-btn" style="padding:8px 20px;">Rozumím</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Brain Dump Modal (při odchodu z projektu) -->
+    <div id="brain-dump-modal" class="modal-overlay hidden">
+        <div class="modal-content glass-panel brain-dump-modal-content">
+            <div class="brain-dump-modal-header">
+                <span class="brain-dump-emoji">🧠</span>
+                <div>
+                    <h3>Brain Dump</h3>
+                    <p class="brain-dump-subtitle">Kde jsi byl v myšlenkách? Nači si to pro příště.</p>
+                </div>
+            </div>
+            <textarea id="brain-dump-input" class="brain-dump-textarea" 
+                placeholder="Například: &#39;Dělám na systému soubojů, nesmím zapomenout na balanc ballistic vs. energy damage..."
+                rows="4"></textarea>
+            <div class="brain-dump-actions">
+                <button id="brain-dump-skip-btn" class="nav-btn">Přeskočit</button>
+                <button id="brain-dump-save-btn" class="cyan-btn brain-dump-save">Uložit & Přejít 🚀</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer Tooltips (V2.4) -->
+    <footer id="app-footer">
+        <div class="footer-item"><span>[N]</span> Nový uzel</div>
+        <div class="footer-item"><span>[T]</span> Sticky</div>
+        <div class="footer-item"><span>[DEL]</span> Smazat</div>
+        <div class="footer-item"><span>[F2]</span> Sticky edit / přejmenovat</div>
+        <div class="footer-item"><span>[G]</span> Snapping</div>
+        <div class="footer-item"><span>[B]</span> Pin 🚩</div>
+        <div class="footer-item"><span>[F]</span> Focus 🔦</div>
+        <div class="footer-item"><span>[H]</span> Heatmap 🌡️</div>
+        <div class="footer-item"><span>[J]</span> Notebook</div>
+        <div class="footer-item"><span>[CTRL+Z]</span> Zpět</div>
+    </footer>
+
+    <!-- Keyboard Shortcuts Help Button -->
+    <button id="shortcuts-help-btn" title="Klávesové zkratky">?</button>
+
+    <!-- Keyboard Shortcuts Panel -->
+    <div id="shortcuts-panel" class="shortcuts-panel hidden">
+        <div class="shortcuts-panel-header">
+            <span class="shortcuts-panel-title">⌨️ Klávesové zkratky</span>
+            <button id="shortcuts-panel-close" class="icon-btn" title="Zavřít">✕</button>
+        </div>
+        <div class="shortcuts-content">
+            <div class="shortcuts-section">
+                <div class="shortcuts-section-title">🗂️ Uzly</div>
+                <div class="shortcut-row"><kbd>N</kbd><span>Nový uzel (nebo pod-uzel)</span></div>
+                <div class="shortcut-row"><kbd>T</kbd><span>Nová sticky poznámka</span></div>
+                <div class="shortcut-row"><kbd>Del</kbd><span>Smazat vybraný uzel</span></div>
+                <div class="shortcut-row"><kbd>F2</kbd><span>U sticky: psát na plátně; jinak přejmenovat</span></div>
+                <div class="shortcut-row"><kbd>B</kbd><span>Připnout / Odepnout 🚩</span></div>
+                <div class="shortcut-row"><kbd>↑ ↓ ← →</kbd><span>Pohyb uzlu po mřížce</span></div>
+                <div class="shortcut-row"><kbd>Ctrl</kbd><span>+</span><kbd>A</kbd><span>Vybrat vše</span></div>
+            </div>
+            <div class="shortcuts-section">
+                <div class="shortcuts-section-title">🔗 Propojování</div>
+                <div class="shortcut-row"><kbd>Klik</kbd><span>Vybrat uzel</span></div>
+                <div class="shortcut-row"><kbd>Pravý klik</kbd><span>Kontextové menu</span></div>
+                <div class="shortcut-row"><kbd>Esc</kbd><span>Zrušit propojovací mód</span></div>
+            </div>
+            <div class="shortcuts-section">
+                <div class="shortcuts-section-title">🖼️ Zobrazení</div>
+                <div class="shortcut-row"><kbd>Kolečko</kbd><span>Přiblížit / Oddálit</span></div>
+                <div class="shortcut-row"><kbd>Pravý tah</kbd><span>Posun plátna</span></div>
+                <div class="shortcut-row"><kbd>G</kbd><span>Přepnout grid snapping 🧲</span></div>
+                <div class="shortcut-row"><kbd>F</kbd><span>Focus Mode 🔦 (vybraný uzel)</span></div>
+                <div class="shortcut-row"><kbd>H</kbd><span>Heatmap aktivit 🌡️ (podržet)</span></div>
+                <div class="shortcut-row"><kbd>J</kbd><span>Přepnout Notebook mode</span></div>
+            </div>
+            <div class="shortcuts-section">
+                <div class="shortcuts-section-title">📋 Editace</div>
+                <div class="shortcut-row"><kbd>Ctrl</kbd><span>+</span><kbd>Z</kbd><span>Zpět (Undo)</span></div>
+                <div class="shortcut-row"><kbd>Ctrl</kbd><span>+</span><kbd>Y</kbd><span>Znovu (Redo)</span></div>
+                <div class="shortcut-row"><kbd>Ctrl</kbd><span>+</span><kbd>B</kbd><span>Tučně (v editoru)</span></div>
+                <div class="shortcut-row"><kbd>Ctrl</kbd><span>+</span><kbd>I</kbd><span>Kurzíva (v editoru)</span></div>
+            </div>
+            <div class="shortcuts-section">
+                <div class="shortcuts-section-title">🔍 Hledání</div>
+                <div class="shortcut-row"><kbd>Enter</kbd><span>Další výsledek hledání</span></div>
+                <div class="shortcut-row"><kbd>Esc</kbd><span>Zrušit hledání</span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Timeline Settings Modal -->
+    <div id="timeline-settings-modal" class="modal-overlay hidden">
+        <div class="modal-content glass-panel" style="border: 1px solid var(--neon-cyan); width: 380px;">
+            <h3 style="margin-bottom: 15px; font-family: 'Outfit'; color: var(--neon-cyan);">📅 Nastavení Timeline</h3>
+            <div class="form-group">
+                <label>Granularita:</label>
+                <select id="tl-granularity" class="modern-input">
+                    <option value="years">Roky</option>
+                    <option value="decades">Desetiletí</option>
+                    <option value="centuries">Staletí</option>
+                </select>
+            </div>
+            <div class="form-group" style="display:flex; gap:10px;">
+                <div style="flex:1;">
+                    <label>Od roku:</label>
+                    <input type="number" id="tl-start-year" class="modern-input" placeholder="2000">
+                </div>
+                <div style="flex:1;">
+                    <label>Do roku:</label>
+                    <input type="number" id="tl-end-year" class="modern-input" placeholder="2050">
+                </div>
+            </div>
+            <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+                <button id="tl-settings-save-btn" class="cyan-btn" style="padding:8px 20px;">Uložit</button>
+                <button id="tl-settings-close-btn" class="nav-btn">Zavřít</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Timeline Add Event Modal -->
+    <div id="timeline-event-modal" class="modal-overlay hidden">
+        <div class="modal-content glass-panel" style="border: 1px solid var(--neon-cyan); width: 380px;">
+            <h3 style="margin-bottom: 15px; font-family: 'Outfit'; color: var(--neon-cyan);">➕ Nový Event na Timeline</h3>
+            <div class="form-group">
+                <label>Název eventu:</label>
+                <input type="text" id="tl-event-name" class="modern-input" placeholder="Název...">
+            </div>
+            <div class="form-group">
+                <label>Rok:</label>
+                <input type="number" id="tl-event-year" class="modern-input" placeholder="Např. 2025">
+            </div>
+            <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+                <button id="tl-event-add-btn" class="cyan-btn" style="padding:8px 20px;">Přidat Event</button>
+                <button id="tl-event-close-btn" class="nav-btn">Zrušit</button>
+            </div>
+        </div>
+    </div>
 
     <script type="module" src="js/main.js"></script>
 </body>

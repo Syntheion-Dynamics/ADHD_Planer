@@ -9,6 +9,9 @@ export class EditorController {
         
         this.notesListContainer = document.getElementById('notes-list');
         this.addNoteBtn = document.getElementById('add-note-btn');
+        this.notesModeBtn = document.getElementById('notes-mode-btn');
+        this.notebookModeBtn = document.getElementById('notebook-mode-btn');
+        this.notesSectionTitle = document.getElementById('notes-section-title');
         
         this.richEditor = document.getElementById('rich-editor');
         this.deleteNodeBtn = document.getElementById('delete-node-btn');
@@ -28,6 +31,9 @@ export class EditorController {
         // V1.3 UI Prvky
         this.statusSelect = document.getElementById('node-status-select');
         this.statInput = document.getElementById('node-stat-input');
+        this.widthInput = document.getElementById('node-width-input');
+        this.heightInput = document.getElementById('node-height-input');
+        this.fontSizeInput = document.getElementById('node-font-size-input');
         this.pinBtn = document.getElementById('node-pin-btn');
         this.connectBtn = document.getElementById('connect-node-btn');
         this.edgesContainer = document.getElementById('edges-container');
@@ -39,7 +45,9 @@ export class EditorController {
 
         this.currentNodeNode = null;
         this.activeNoteId = null;
+        this.activeNotebookPageId = null;
         this.editingPropNoteId = null;
+        this.editorMode = 'node'; // 'node' | 'notebook'
 
         this.setupEventListeners();
         this.setupToolbar();
@@ -48,23 +56,42 @@ export class EditorController {
     setupEventListeners() {
         this.titleInput.addEventListener('input', (e) => {
             if (this.currentNodeNode) {
-                // Not pushing history on every character, but maybe on focus/blur?
-                // For now, simple update is fine.
                 this.currentNodeNode.title = e.target.value;
+                this.currentNodeNode.lastEditedAt = Date.now(); // Heatmap tracking
+                this.appManager.getActiveRenderer().draw();
             }
         });
 
         this.richEditor.addEventListener('input', () => {
+            if (this.editorMode === 'notebook') {
+                const page = this.getActiveNotebookPage();
+                if (page) {
+                    page.content = this.sanitizeHtml(this.richEditor.innerHTML);
+                    page.updatedAt = new Date().toISOString();
+                }
+                return;
+            }
+            if (this.currentNodeNode?.shape === 'sticky') {
+                this.currentNodeNode.stickyText = this.sanitizeHtml(this.richEditor.innerHTML);
+                this.currentNodeNode.lastEditedAt = Date.now();
+                this.appManager.getActiveRenderer().draw();
+                return;
+            }
             if (this.currentNodeNode && this.activeNoteId) {
                 const note = this.currentNodeNode.notes.find(n => n.id === this.activeNoteId);
                 if (note) {
-                    note.content = this.richEditor.innerHTML;
+                    note.content = this.sanitizeHtml(this.richEditor.innerHTML);
                     note.updatedAt = new Date().toISOString();
+                    this.currentNodeNode.lastEditedAt = Date.now(); // Heatmap tracking
                 }
             }
         });
 
         this.addNoteBtn.addEventListener('click', () => {
+            if (this.editorMode === 'notebook') {
+                this.addNotebookPage();
+                return;
+            }
             if (this.currentNodeNode) {
                 const newNote = this.currentNodeNode.addNote();
                 this.activeNoteId = newNote.id;
@@ -119,6 +146,37 @@ export class EditorController {
             }
         });
 
+        if (this.widthInput) {
+            this.widthInput.addEventListener('change', (e) => {
+                if (this.currentNodeNode) {
+                    this.appManager.pushHistory();
+                    this.currentNodeNode.width = parseInt(e.target.value) || 10;
+                    this.appManager.getActiveRenderer().draw();
+                }
+            });
+        }
+
+        if (this.heightInput) {
+            this.heightInput.addEventListener('change', (e) => {
+                if (this.currentNodeNode) {
+                    this.appManager.pushHistory();
+                    this.currentNodeNode.height = parseInt(e.target.value) || 10;
+                    this.appManager.getActiveRenderer().draw();
+                }
+            });
+        }
+
+        if (this.fontSizeInput) {
+            this.fontSizeInput.addEventListener('change', (e) => {
+                if (this.currentNodeNode) {
+                    this.appManager.pushHistory();
+                    const val = parseInt(e.target.value);
+                    this.currentNodeNode.labelFontSize = Math.min(32, Math.max(8, val || 14));
+                    this.appManager.getActiveRenderer().draw();
+                }
+            });
+        }
+
         this.pinBtn.addEventListener('click', () => {
             if (this.currentNodeNode) {
                 this.currentNodeNode.isPinned = !this.currentNodeNode.isPinned;
@@ -127,12 +185,51 @@ export class EditorController {
             }
         });
 
+        const stickyBg = document.getElementById('sticky-bg-color');
+        const stickyTxt = document.getElementById('sticky-text-color');
+        const stickyReset = document.getElementById('sticky-colors-reset');
+        const syncStickyOverlayIfEditing = () => {
+            const n = this.currentNodeNode;
+            if (!n || n.shape !== 'sticky') return;
+            const overlay = document.getElementById('sticky-inline-edit');
+            if (overlay && this.appManager.canvasRenderer?.getStickyEditingNodeId?.() === n.id) {
+                this.appManager.canvasRenderer.applyStickyOverlayTheme(n, overlay);
+            }
+        };
+        stickyBg?.addEventListener('input', () => {
+            if (this.currentNodeNode?.shape !== 'sticky') return;
+            this.currentNodeNode.stickyBgColor = stickyBg.value;
+            this.currentNodeNode.lastEditedAt = Date.now();
+            syncStickyOverlayIfEditing();
+            this.appManager.getActiveRenderer().draw();
+        });
+        stickyTxt?.addEventListener('input', () => {
+            if (this.currentNodeNode?.shape !== 'sticky') return;
+            this.currentNodeNode.stickyTextColor = stickyTxt.value;
+            this.currentNodeNode.lastEditedAt = Date.now();
+            syncStickyOverlayIfEditing();
+            this.appManager.getActiveRenderer().draw();
+        });
+        stickyReset?.addEventListener('click', () => {
+            if (this.currentNodeNode?.shape !== 'sticky') return;
+            this.appManager.pushHistory();
+            this.currentNodeNode.stickyBgColor = null;
+            this.currentNodeNode.stickyTextColor = null;
+            this.currentNodeNode.lastEditedAt = Date.now();
+            this.syncStickyAppearanceControls();
+            syncStickyOverlayIfEditing();
+            this.appManager.getActiveRenderer().draw();
+        });
+
         this.connectBtn.addEventListener('click', () => {
             if (this.currentNodeNode) {
                 this.appManager.isConnecting = true;
                 document.getElementById('connect-overlay').classList.remove('hidden');
             }
         });
+
+        this.notesModeBtn?.addEventListener('click', () => this.setEditorMode('node'));
+        this.notebookModeBtn?.addEventListener('click', () => this.setEditorMode('notebook'));
 
         // V2.0 — Node image upload (simulace)
         if (this.nodeImageBtn && this.nodeImageInput) {
@@ -148,12 +245,18 @@ export class EditorController {
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ filename: file.name, base64: ev.target.result })
                         });
-                        if (res.ok) {
-                            const data = await res.json();
+                        let data = {};
+                        try { data = await res.json(); } catch (_) { /* ignore */ }
+                        if (res.ok && data.url) {
                             this.currentNodeNode.nodeImage = data.url;
                             this.showNode(this.currentNodeNode);
                             this.appManager.getActiveRenderer().draw();
                             if (this.appManager.toast) this.appManager.toast.success('Obrázek uzlu nastaven!');
+                        } else if (this.appManager.toast) {
+                            const msg = res.status === 413
+                                ? 'Soubor je příliš velký — zmenši obrázek nebo rozlišení.'
+                                : 'Nepodařilo se nahrát obrázek.';
+                            this.appManager.toast.error(msg);
                         }
                     } catch (err) {
                         console.error(err);
@@ -180,17 +283,25 @@ export class EditorController {
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ filename: file.name, base64: base64 })
                     });
-                    if (res.ok) {
-                        const data = await res.json();
+                    let data = {};
+                    try { data = await res.json(); } catch (_) { /* ignore */ }
+                    if (res.ok && data.url) {
                         this.richEditor.focus();
                         document.execCommand('insertImage', false, data.url);
                         
-                        if (this.currentNodeNode && this.activeNoteId) {
+                        if (this.currentNodeNode?.shape === 'sticky') {
+                            this.currentNodeNode.stickyText = this.sanitizeHtml(this.richEditor.innerHTML);
+                            this.currentNodeNode.lastEditedAt = Date.now();
+                            this.appManager.getActiveRenderer().draw();
+                        } else if (this.currentNodeNode && this.activeNoteId) {
                             const note = this.currentNodeNode.notes.find(n => n.id === this.activeNoteId);
                             if (note) note.updatedAt = new Date().toISOString();
                         }
-                    } else {
-                        if (this.appManager.toast) this.appManager.toast.error("Nepodařilo se nahrát obrázek.");
+                    } else if (this.appManager.toast) {
+                        const msg = res.status === 413
+                            ? 'Soubor je příliš velký — zmenši obrázek nebo rozlišení.'
+                            : 'Nepodařilo se nahrát obrázek.';
+                        this.appManager.toast.error(msg);
                     }
                 } catch (err) {
                     console.error(err);
@@ -222,6 +333,27 @@ export class EditorController {
                 }
             }
         });
+
+        const quickTagsDiv = document.getElementById('prop-quick-tags');
+        if (quickTagsDiv) {
+            quickTagsDiv.addEventListener('click', (e) => {
+                if (e.target.tagName === 'BUTTON') {
+                    const tag = e.target.getAttribute('data-tag');
+                    if (tag && this.editingPropNoteId && this.currentNodeNode) {
+                        const note = this.currentNodeNode.notes.find(n => n.id === this.editingPropNoteId);
+                        if (note) {
+                            if (!note.tags) note.tags = [];
+                            if (!note.tags.includes(tag)) {
+                                note.tags.push(tag);
+                                this.propTagsInput.value = note.tags.join(" ");
+                                note.updatedAt = new Date().toISOString();
+                                this.appManager.getActiveRenderer().draw();
+                            }
+                        }
+                    }
+                }
+            });
+        }
     }
 
     setupToolbar() {
@@ -232,6 +364,11 @@ export class EditorController {
                 const cmd = btn.getAttribute('data-cmd');
                 document.execCommand(cmd, false, null);
                 this.richEditor.focus();
+                if (this.currentNodeNode?.shape === 'sticky') {
+                    this.currentNodeNode.stickyText = this.sanitizeHtml(this.richEditor.innerHTML);
+                    this.currentNodeNode.lastEditedAt = Date.now();
+                    this.appManager.getActiveRenderer().draw();
+                }
             });
         });
 
@@ -242,25 +379,102 @@ export class EditorController {
             document.execCommand('formatBlock', false, format);
             select.value = 'p'; 
             this.richEditor.focus();
+            if (this.currentNodeNode?.shape === 'sticky') {
+                this.currentNodeNode.stickyText = this.sanitizeHtml(this.richEditor.innerHTML);
+                this.currentNodeNode.lastEditedAt = Date.now();
+                this.appManager.getActiveRenderer().draw();
+            }
         });
+    }
+
+    renderCurrentNode() {
+        this.showNode(this.currentNodeNode);
+    }
+
+    getStickyThemeDefaults() {
+        const light = document.body.classList.contains('light-mode');
+        return {
+            bg: light ? '#fef3c7' : '#3a2f14',
+            text: light ? '#422006' : '#fef3c7',
+        };
+    }
+
+    syncStickyAppearanceControls() {
+        const row = document.getElementById('sticky-appearance-row');
+        const bgInput = document.getElementById('sticky-bg-color');
+        const txtInput = document.getElementById('sticky-text-color');
+        if (!row) return;
+        const show = this.currentNodeNode?.shape === 'sticky' && this.editorMode === 'node';
+        if (!show) {
+            row.classList.add('hidden');
+            return;
+        }
+        row.classList.remove('hidden');
+        const { bg, text } = this.getStickyThemeDefaults();
+        if (bgInput) bgInput.value = this.currentNodeNode.stickyBgColor || bg;
+        if (txtInput) txtInput.value = this.currentNodeNode.stickyTextColor || text;
     }
 
     showNode(node) {
         this.currentNodeNode = node;
+        this.setModeButtonState();
+        if (this.editorMode === 'notebook') {
+            this.overlay.classList.add('hidden');
+            this.renderNotesList();
+            this.syncStickyAppearanceControls();
+            return;
+        }
         if (!node) {
             this.overlay.classList.remove('hidden');
             this.notesListContainer.innerHTML = '';
+            this.notesListContainer.parentElement?.classList.remove('sticky-mode');
+            this.addNoteBtn.classList.remove('hidden');
+            document.getElementById('sticky-created-hint')?.classList.add('hidden');
+            this.titleInput.placeholder = 'Název uzlu...';
             this.richEditor.innerHTML = '';
             this.edgesList.innerHTML = '';
+            this.syncStickyAppearanceControls();
             return;
         }
 
         this.overlay.classList.add('hidden');
         this.titleInput.value = node.title;
+        const stickyHint = document.getElementById('sticky-created-hint');
+        const notesSection = this.notesListContainer.parentElement;
+
+        if (node.shape === 'sticky' && this.editorMode === 'node') {
+            notesSection?.classList.add('sticky-mode');
+            this.addNoteBtn.classList.add('hidden');
+            this.notesSectionTitle.textContent = 'Sticky poznámka';
+            this.titleInput.placeholder = 'Titulek — orientace na plátně…';
+            if (stickyHint) {
+                stickyHint.classList.remove('hidden');
+                if (node.stickyCreatedAt) {
+                    try {
+                        stickyHint.textContent = 'Vytvořeno: ' + new Date(node.stickyCreatedAt).toLocaleString('cs-CZ');
+                    } catch (_) {
+                        stickyHint.textContent = '';
+                    }
+                } else stickyHint.textContent = '';
+            }
+            if (this.fontSizeInput) this.fontSizeInput.style.visibility = 'hidden';
+        } else {
+            notesSection?.classList.remove('sticky-mode');
+            this.addNoteBtn.classList.remove('hidden');
+            if (this.editorMode === 'node') {
+                this.notesSectionTitle.textContent = 'Poznámky';
+            }
+            this.titleInput.placeholder = 'Název uzlu...';
+            stickyHint?.classList.add('hidden');
+            if (this.fontSizeInput) this.fontSizeInput.style.visibility = '';
+        }
         
         // V1.3 UI Update
         this.statusSelect.value = node.status || 'none';
         this.statInput.value = node.statValue || '';
+        if (this.widthInput) this.widthInput.value = Math.round(node.width);
+        if (this.heightInput) this.heightInput.value = Math.round(node.height);
+        if (this.fontSizeInput) this.fontSizeInput.value = node.labelFontSize || 14;
         this.pinBtn.style.color = node.isPinned ? '#ef4444' : 'var(--text-muted)';
         this.pinBtn.style.background = node.isPinned ? 'rgba(239, 68, 68, 0.2)' : 'transparent';
 
@@ -289,12 +503,27 @@ export class EditorController {
             if (this.nodeImageBtn) this.nodeImageBtn.style.display = 'none';
         }
         
+        if (node.shape === 'sticky' && this.editorMode === 'node') {
+            const overlay = document.getElementById('sticky-inline-edit');
+            const editingHere = this.appManager.canvasRenderer?.getStickyEditingNodeId?.() === node.id
+                && overlay && document.activeElement === overlay;
+            if (!editingHere) {
+                const html = this.sanitizeHtml(node.stickyText || '');
+                if (this.richEditor.innerHTML !== html) {
+                    this.richEditor.innerHTML = html || '';
+                }
+            }
+            this.syncStickyAppearanceControls();
+            return;
+        }
+
         if (!node.notes || node.notes.length === 0) node.addNote();
         
         const exists = node.notes.find(n => n.id === this.activeNoteId);
         if (!exists) this.activeNoteId = node.notes[0].id;
 
         this.renderNotesList();
+        this.syncStickyAppearanceControls();
     }
 
     renderEdgesList() {
@@ -403,6 +632,10 @@ export class EditorController {
     }
 
     renderNotesList() {
+        if (this.editorMode === 'notebook') {
+            this.renderNotebookPages();
+            return;
+        }
         if (!this.currentNodeNode) return;
         this.notesListContainer.innerHTML = '';
         
@@ -460,10 +693,144 @@ export class EditorController {
         const activeNoteObj = this.currentNodeNode.notes.find(n => n.id === this.activeNoteId);
         if (activeNoteObj) {
             if (this.richEditor.innerHTML !== activeNoteObj.content) {
-                 this.richEditor.innerHTML = activeNoteObj.content || '';
+                 this.richEditor.innerHTML = this.sanitizeHtml(activeNoteObj.content || '');
             }
         } else {
             this.richEditor.innerHTML = '';
         }
+    }
+
+    setEditorMode(mode) {
+        this.editorMode = mode === 'notebook' ? 'notebook' : 'node';
+        if (this.editorMode === 'notebook') {
+            this.overlay.classList.add('hidden');
+            this.notesSectionTitle.textContent = 'Notebook';
+            this.addNoteBtn.textContent = '+ Nová stránka';
+            this.ensureNotebookSeed();
+            this.renderNotebookPages();
+        } else {
+            this.notesSectionTitle.textContent = 'Poznámky';
+            this.addNoteBtn.textContent = '+ Nová poznámka';
+            this.showNode(this.currentNodeNode);
+        }
+        this.setModeButtonState();
+        this.syncStickyAppearanceControls();
+    }
+
+    toggleNotebookMode() {
+        this.setEditorMode(this.editorMode === 'notebook' ? 'node' : 'notebook');
+    }
+
+    setModeButtonState() {
+        this.notesModeBtn?.classList.toggle('active', this.editorMode === 'node');
+        this.notebookModeBtn?.classList.toggle('active', this.editorMode === 'notebook');
+    }
+
+    ensureNotebookSeed() {
+        const project = this.appManager.currentProject;
+        if (!project.notebook) project.notebook = { pages: [] };
+        if (!Array.isArray(project.notebook.pages)) project.notebook.pages = [];
+        if (project.notebook.pages.length === 0) {
+            project.notebook.pages.push({
+                id: `nb_${Date.now()}`,
+                title: 'Hlavní stránka',
+                content: '',
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+                linkedNodeId: null
+            });
+        }
+        if (!this.activeNotebookPageId) this.activeNotebookPageId = project.notebook.pages[0].id;
+    }
+
+    addNotebookPage() {
+        if (!this.appManager.currentProject) return;
+        this.appManager.pushHistory();
+        this.ensureNotebookSeed();
+        const page = {
+            id: `nb_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+            title: 'Nová stránka',
+            content: '',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            linkedNodeId: null
+        };
+        this.appManager.currentProject.notebook.pages.push(page);
+        this.activeNotebookPageId = page.id;
+        this.renderNotebookPages();
+    }
+
+    getActiveNotebookPage() {
+        const pages = this.appManager.currentProject?.notebook?.pages || [];
+        return pages.find(p => p.id === this.activeNotebookPageId) || null;
+    }
+
+    renderNotebookPages() {
+        this.notesListContainer.innerHTML = '';
+        this.ensureNotebookSeed();
+        const pages = this.appManager.currentProject.notebook.pages;
+        if (!pages.find(p => p.id === this.activeNotebookPageId)) {
+            this.activeNotebookPageId = pages[0]?.id || null;
+        }
+
+        for (const page of pages) {
+            const div = document.createElement('div');
+            const isActive = page.id === this.activeNotebookPageId;
+            div.className = `note-item ${isActive ? 'active' : ''} size-small`;
+            const linkedNode = page.linkedNodeId ? this.appManager.currentProject.getNode(page.linkedNodeId) : null;
+            div.innerHTML = `
+                <div class="note-item-title">${page.title || 'Bez názvu'}</div>
+                <div class="note-item-date">${linkedNode ? '🔗 ' + linkedNode.title : 'Notebook page'}</div>
+                <div class="note-actions">
+                    <button class="icon-btn del-btn" title="Smazat stránku">🗑️</button>
+                </div>
+            `;
+            div.addEventListener('click', (e) => {
+                if (e.target.closest('.note-actions')) return;
+                this.activeNotebookPageId = page.id;
+                this.renderNotebookPages();
+            });
+            div.querySelector('.del-btn').addEventListener('click', () => {
+                if (pages.length <= 1) return;
+                this.appManager.currentProject.notebook.pages = pages.filter(p => p.id !== page.id);
+                if (this.activeNotebookPageId === page.id) {
+                    this.activeNotebookPageId = this.appManager.currentProject.notebook.pages[0].id;
+                }
+                this.renderNotebookPages();
+            });
+            this.notesListContainer.appendChild(div);
+        }
+
+        const activePage = this.getActiveNotebookPage();
+        this.titleInput.value = activePage ? (activePage.title || '') : '';
+        if (activePage) {
+            if (this.richEditor.innerHTML !== activePage.content) {
+                this.richEditor.innerHTML = this.sanitizeHtml(activePage.content || '');
+            }
+            this.titleInput.oninput = (e) => {
+                activePage.title = e.target.value;
+                activePage.updatedAt = new Date().toISOString();
+            };
+        } else {
+            this.richEditor.innerHTML = '';
+        }
+    }
+
+    sanitizeHtml(html) {
+        if (!html) return '';
+        // Minimal XSS hardening: removes scripts/styles/iframes/object/embed and inline handlers.
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+        doc.querySelectorAll('script,style,iframe,object,embed').forEach((el) => el.remove());
+        doc.querySelectorAll('*').forEach((el) => {
+            [...el.attributes].forEach((attr) => {
+                const name = attr.name.toLowerCase();
+                const value = (attr.value || '').toLowerCase();
+                if (name.startsWith('on') || value.includes('javascript:')) {
+                    el.removeAttribute(attr.name);
+                }
+            });
+        });
+        return doc.body.innerHTML;
     }
 }

@@ -1,0 +1,85 @@
+{
+  "name": "adhd-planer",
+  "version": "0.1.0",
+  "description": "ADHD Planer — visual canvas + timeline for worldbuilding and project planning",
+  "main": "electron/main.js",
+  "author": "Planer",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "server": "python server.py",
+    "prepare:python": "powershell -ExecutionPolicy Bypass -File scripts/prepare-python-sidecar.ps1",
+    "pack:dir": "electron-builder --win dir",
+    "pack:portable": "npm run prepare:python && electron-builder --win portable",
+    "dist": "npm run prepare:python && electron-builder --win portable"
+  },
+  "devDependencies": {
+    "electron": "^34.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.planer.adhd",
+    "productName": "ADHD Planer",
+    "copyright": "Copyright © 2026",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "index.html",
+        "to": "app-static/index.html"
+      },
+      {
+        "from": "style.css",
+        "to": "app-static/style.css"
+      },
+      {
+        "from": "server.py",
+        "to": "app-static/server.py"
+      },
+      {
+        "from": "requirements.txt",
+        "to": "app-static/requirements.txt"
+      },
+      {
+        "from": "LICENSE",
+        "to": "app-static/LICENSE"
+      },
+      {
+        "from": "THIRD_PARTY_NOTICES.md",
+        "to": "app-static/THIRD_PARTY_NOTICES.md"
+      },
+      {
+        "from": "js",
+        "to": "app-static/js"
+      },
+      {
+        "from": "fonts",
+        "to": "app-static/fonts"
+      },
+      {
+        "from": "python-runtime",
+        "to": "python",
+        "filter": ["**/*"]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "ADHD-Planer-${version}-portable.${ext}"
+    },
+    "portable": {
+      "artifactName": "ADHD-Planer-${version}-portable.exe"
+    },
+    "asar": true
+  }
+}

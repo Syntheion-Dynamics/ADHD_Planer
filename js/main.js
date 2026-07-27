@@ -1,15 +1,71 @@
 import { Project } from './Project.js';
+import { ProjectNode } from './ProjectNode.js';
 import { CanvasRenderer } from './CanvasRenderer.js';
 import { SimulationRenderer } from './SimulationRenderer.js';
 import { EditorController } from './EditorController.js';
 import { ToastManager } from './ToastManager.js';
+import { TimelineRenderer } from './TimelineRenderer.js';
+import { MasterDocController } from './MasterDocController.js';
+
+const PLANER_APP_SETTINGS_KEY = 'planer_app_settings';
 
 class AppManager {
+    static defaultAppSettings() {
+        return {
+            remindOnTabLeave: true,
+            remindOnTabReturn: false,
+            snapToGrid: true,
+            uiStyle: 'neon',
+            uiFont: 'inter',
+        };
+    }
+
+    /** CSS font stack pro UI (--app-font-sans / --app-font-display) */
+    static fontCssStack(key) {
+        const map = {
+            inter: "'Inter', system-ui, sans-serif",
+            system: "system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif",
+            serif: "Georgia, 'Times New Roman', serif",
+            mono: "'Consolas', 'Courier New', monospace",
+        };
+        return map[key] || map.inter;
+    }
+
+    /** Jedno jméno písma pro canvas measureText / fillText */
+    static fontForCanvas(key) {
+        const map = { inter: 'Inter', system: 'system-ui', serif: 'Georgia', mono: 'Consolas' };
+        return map[key] || 'Inter';
+    }
+
+    static readAppSettingsFromStorage() {
+        try {
+            const raw = localStorage.getItem(PLANER_APP_SETTINGS_KEY);
+            if (!raw) return { ...AppManager.defaultAppSettings() };
+            const parsed = JSON.parse(raw);
+            if (typeof parsed !== 'object' || !parsed) return { ...AppManager.defaultAppSettings() };
+            return { ...AppManager.defaultAppSettings(), ...parsed };
+        } catch {
+            return { ...AppManager.defaultAppSettings() };
+        }
+    }
+
+    static writeAppSettingsToStorage(settings) {
+        try {
+            const merged = { ...AppManager.defaultAppSettings(), ...settings };
+            localStorage.setItem(PLANER_APP_SETTINGS_KEY, JSON.stringify(merged));
+        } catch (e) {
+            console.warn('planer: nelze uložit nastavení aplikace', e);
+        }
+    }
+
     constructor() {
         this.projects = new Map();
         this.currentProject = null;
         this.selectedNodeIds = new Set(); // V2.1 — Multi-select
         this.isConnecting = false;
+        this.appSettings = AppManager.readAppSettingsFromStorage();
+        this.snapToGrid = !!this.appSettings.snapToGrid; // V2.4
+        this.applyAppearanceSettings();
 
         // Search state
         this.searchResults = [];
@@ -18,7 +74,7 @@ class AppManager {
         // V2.1 — History (Undo/Redo)
         this.history = [];
         this.redoStack = [];
-        this.historyLimit = 50;
+        this.historyLimit = 300;
 
         // V2.0 — Toast systém
         this.toast = new ToastManager();
@@ -30,20 +86,328 @@ class AppManager {
         // Context menu state
         this.contextMenuWorldPos = null;
         this.contextMenuNodeId = null;
+        this.contextMenuEdge = null; // V2.3: { sourceNodeId, targetId }
         
         this.editor = new EditorController(this);
+        this.masterDoc = new MasterDocController(this);
         
         // V2.2 — Performance & Alignment
         this.performanceMode = false;
-        this.alignmentLines = { x: null, y: null }; 
+        this.alignmentLines = { x: null, y: null };
+
+        // Focus Mode & Heatmap (V3.0)
+        this.focusMode = false;
+        this.focusConnectedIds = new Set();
+        this.heatmapMode = false;
+
 
         this.setupUI();
+        this.setupAppSettings();
         this.setupShortcuts();
         this.setupContextMenu();
+        this.setupShortcutsHelp();
+        this.setupTimeline();
+        this.setupOnboarding();
         this.initApp();
     }
 
+    setupOnboarding() {
+        const KEY = 'planer_onboarded';
+        const modal = document.getElementById('onboarding-modal');
+        const okBtn = document.getElementById('onboarding-ok-btn');
+        if (!modal || !okBtn) return;
+
+        const dismiss = () => {
+            modal.classList.add('hidden');
+            try { localStorage.setItem(KEY, '1'); } catch (_) { /* ignore */ }
+        };
+        okBtn.addEventListener('click', dismiss);
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) dismiss();
+        });
+
+        try {
+            if (localStorage.getItem(KEY) === '1') return;
+        } catch (_) { /* show anyway */ }
+        // Po načtení UI — krátký delay ať nepřekryje toast z loadu
+        setTimeout(() => modal.classList.remove('hidden'), 400);
+    }
+
+    applyAppearanceSettings() {
+        const stack = AppManager.fontCssStack(this.appSettings.uiFont);
+        document.documentElement.style.setProperty('--app-font-sans', stack);
+        document.documentElement.style.setProperty('--app-font-display', stack);
+        document.body.classList.toggle('ui-gray', this.appSettings.uiStyle === 'gray');
+    }
+
+    // V4.0 — Klávesové zkratky nápověda (? tlačítko)
+    setupShortcutsHelp() {
+        const btn = document.getElementById('shortcuts-help-btn');
+        const panel = document.getElementById('shortcuts-panel');
+        const closeBtn = document.getElementById('shortcuts-panel-close');
+
+        if (!btn || !panel) return;
+
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isOpen = !panel.classList.contains('hidden');
+            if (isOpen) {
+                panel.classList.add('hidden');
+                btn.classList.remove('active');
+            } else {
+                panel.classList.remove('hidden');
+                btn.classList.add('active');
+            }
+        });
+
+        closeBtn?.addEventListener('click', () => {
+            panel.classList.add('hidden');
+            btn.classList.remove('active');
+        });
+
+        // Zavřít klikem mimo panel
+        document.addEventListener('click', (e) => {
+            if (!panel.contains(e.target) && e.target !== btn) {
+                panel.classList.add('hidden');
+                btn.classList.remove('active');
+            }
+        });
+
+        // Zavřít klávesou Escape
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && !panel.classList.contains('hidden')) {
+                panel.classList.add('hidden');
+                btn.classList.remove('active');
+            }
+        });
+    }
+
+    /** Modal „Aplikace“, localStorage, připomínky při přepnutí záložky, export JSON */
+    setupAppSettings() {
+        const modal = document.getElementById('app-settings-modal');
+        const openBtn = document.getElementById('app-settings-btn');
+        const saveBtn = document.getElementById('app-settings-save-btn');
+        const closeBtn = document.getElementById('app-settings-close-btn');
+        const exportBtn = document.getElementById('app-export-btn');
+        const leaveCb = document.getElementById('app-set-tab-leave');
+        const returnCb = document.getElementById('app-set-tab-return');
+        const snapCb = document.getElementById('app-set-snap-grid');
+        const uiStyleSel = document.getElementById('app-set-ui-style');
+        const uiFontSel = document.getElementById('app-set-font');
+        const fontKeys = new Set(['inter', 'system', 'serif', 'mono']);
+
+        const fillModal = () => {
+            if (leaveCb) leaveCb.checked = !!this.appSettings.remindOnTabLeave;
+            if (returnCb) returnCb.checked = !!this.appSettings.remindOnTabReturn;
+            if (snapCb) snapCb.checked = !!this.appSettings.snapToGrid;
+            if (uiStyleSel) uiStyleSel.value = this.appSettings.uiStyle === 'gray' ? 'gray' : 'neon';
+            if (uiFontSel) {
+                uiFontSel.value = fontKeys.has(this.appSettings.uiFont) ? this.appSettings.uiFont : 'inter';
+            }
+        };
+
+        openBtn?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            fillModal();
+            modal?.classList.remove('hidden');
+        });
+
+        closeBtn?.addEventListener('click', () => modal?.classList.add('hidden'));
+
+        modal?.addEventListener('click', (e) => {
+            if (e.target === modal) modal.classList.add('hidden');
+        });
+
+        saveBtn?.addEventListener('click', () => {
+            this.appSettings.remindOnTabLeave = !!(leaveCb?.checked);
+            this.appSettings.remindOnTabReturn = !!(returnCb?.checked);
+            this.appSettings.snapToGrid = !!(snapCb?.checked);
+            this.appSettings.uiStyle = uiStyleSel?.value === 'gray' ? 'gray' : 'neon';
+            this.appSettings.uiFont = fontKeys.has(uiFontSel?.value) ? uiFontSel.value : 'inter';
+            this.snapToGrid = this.appSettings.snapToGrid;
+            this.applyAppearanceSettings();
+            AppManager.writeAppSettingsToStorage(this.appSettings);
+            this.getActiveRenderer()?.draw();
+            this.timelineRenderer?.draw?.();
+            this.toast.success('Nastavení aplikace uloženo.');
+            modal?.classList.add('hidden');
+        });
+
+        exportBtn?.addEventListener('click', () => this.downloadProjectsExportJson());
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'Escape' || !modal || modal.classList.contains('hidden')) return;
+            modal.classList.add('hidden');
+        });
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') {
+                if (this.appSettings.remindOnTabLeave) {
+                    this.toast.info('Planer běží na pozadí — nezapomeň uložit (Uložit synchro).', 4500);
+                }
+            } else if (document.visibilityState === 'visible') {
+                if (this.appSettings.remindOnTabReturn) {
+                    this.toast.success('Vítej zpět u Planeru.', 2500);
+                }
+            }
+        });
+    }
+
+    downloadProjectsExportJson() {
+        const d = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        const fname = `planer-export-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}.json`;
+        const payload = {
+            exportVersion: 1,
+            exportedAt: d.toISOString(),
+            appSettings: { ...this.appSettings },
+            projects: Array.from(this.projects.values()).map((p) => p.toJSON()),
+        };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fname;
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        this.toast.success('Export JSON stažen.');
+    }
+
+    // V4.1 — Timeline inicializace
+    setupTimeline() {
+        this.timelineRenderer = new TimelineRenderer('timeline-canvas', this);
+
+        const panel = document.getElementById('timeline-panel');
+        const toggleBtn = document.getElementById('timeline-toggle-btn');
+        const settingsBtn = document.getElementById('timeline-settings-btn');
+        const addEventBtn = document.getElementById('timeline-add-event-btn');
+        const settingsModal = document.getElementById('timeline-settings-modal');
+        const eventModal = document.getElementById('timeline-event-modal');
+
+        // Toggle collapse/expand
+        toggleBtn?.addEventListener('click', () => {
+            panel.classList.toggle('collapsed');
+            toggleBtn.textContent = panel.classList.contains('collapsed') ? '▲' : '▼';
+            if (!panel.classList.contains('collapsed')) {
+                this.timelineRenderer.resize();
+                this.timelineRenderer.draw();
+            }
+        });
+
+        // Settings modal
+        settingsBtn?.addEventListener('click', () => {
+            const tl = this.currentProject?.timeline;
+            if (!tl) return;
+            document.getElementById('tl-granularity').value = tl.granularity || 'years';
+            document.getElementById('tl-start-year').value = tl.startYear || 2000;
+            document.getElementById('tl-end-year').value = tl.endYear || 2050;
+            settingsModal.classList.remove('hidden');
+        });
+
+        document.getElementById('tl-settings-close-btn')?.addEventListener('click', () => {
+            settingsModal.classList.add('hidden');
+        });
+
+        document.getElementById('tl-settings-save-btn')?.addEventListener('click', () => {
+            const tl = this.currentProject?.timeline;
+            if (!tl) return;
+            tl.granularity = document.getElementById('tl-granularity').value;
+            tl.startYear = parseInt(document.getElementById('tl-start-year').value) || 2000;
+            tl.endYear = parseInt(document.getElementById('tl-end-year').value) || 2050;
+            if (tl.startYear >= tl.endYear) { this.toast.error('Rok "Od" musí být menší než "Do"!'); return; }
+            this.timelineRenderer.draw();
+            this.saveToAPI();
+            settingsModal.classList.add('hidden');
+            this.toast.success('Nastavení timeline uloženo!');
+        });
+
+        // Add event modal
+        addEventBtn?.addEventListener('click', () => {
+            document.getElementById('tl-event-name').value = '';
+            document.getElementById('tl-event-year').value = new Date().getFullYear();
+            eventModal.classList.remove('hidden');
+            setTimeout(() => document.getElementById('tl-event-name')?.focus(), 50);
+        });
+
+        document.getElementById('tl-event-close-btn')?.addEventListener('click', () => {
+            eventModal.classList.add('hidden');
+        });
+
+        document.getElementById('tl-event-add-btn')?.addEventListener('click', () => {
+            this._addTimelineEvent(
+                document.getElementById('tl-event-name').value,
+                document.getElementById('tl-event-year').value
+            );
+            eventModal.classList.add('hidden');
+        });
+
+        // Resize logic (V4.2)
+        const resizer = document.getElementById('timeline-resizer');
+        let isResizing = false;
+
+        resizer?.addEventListener('mousedown', (e) => {
+            if (panel.classList.contains('collapsed')) return;
+            isResizing = true;
+            panel.style.transition = 'none'; // Disable transition for smooth resizing
+            document.body.style.cursor = 'ns-resize';
+            panel.classList.add('is-resizing');
+            e.preventDefault();
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isResizing) return;
+            // e.clientY is mouse position from top
+            // panel is pinned to bottom: 0;
+            // height = window.innerHeight - e.clientY;
+            let newHeight = window.innerHeight - e.clientY;
+            
+            // Constraints
+            const minH = 100;
+            const maxH = window.innerHeight * 0.4;
+            if (newHeight < minH) newHeight = minH;
+            if (newHeight > maxH) newHeight = maxH;
+
+            panel.style.height = newHeight + 'px';
+            this.timelineRenderer?.resize();
+            this.timelineRenderer?.draw();
+        });
+
+        window.addEventListener('mouseup', () => {
+            if (isResizing) {
+                isResizing = false;
+                panel.style.transition = ''; // Restore transition
+                document.body.style.cursor = 'default';
+                panel.classList.remove('is-resizing');
+                // Save to current project if needed (V4.2)
+                if (this.currentProject?.timeline) {
+                    this.currentProject.timeline.height = parseInt(panel.style.height);
+                    this.saveToAPI();
+                }
+            }
+        });
+    }
+
+    _addTimelineEvent(name, year) {
+        if (!name || !year || !this.currentProject) return;
+        const tl = this.currentProject.timeline;
+        if (!tl) return;
+        this.pushHistory();
+        const node = this.currentProject.addNode(name || 'Event', 100, 100);
+        node.timelineDate = String(parseInt(year));
+        tl.enabled = true;
+        const panel = document.getElementById('timeline-panel');
+        panel?.classList.remove('hidden');
+        this.timelineRenderer?.resize();
+        this.timelineRenderer?.draw();
+        this.canvasRenderer.draw();
+        this.toast.success(`Event "${name}" přidán na timeline!`);
+    }
+
     // V2.0 — Vrací aktivní renderer podle módu projektu
+
     getActiveRenderer() {
         if (this.currentProject && this.currentProject.mode === 'simulation') {
             return this.simRenderer;
@@ -55,17 +419,33 @@ class AppManager {
     updateCanvasVisibility() {
         const dataCanvas = document.getElementById('project-canvas');
         const simCanvas = document.getElementById('simulation-canvas');
+        const timelinePanel = document.getElementById('timeline-panel');
         
         this.updatePerformanceMode(); // V2.2 check
 
         if (this.currentProject && this.currentProject.mode === 'simulation') {
+            this.canvasRenderer.endStickyInlineEdit(true);
             dataCanvas.style.display = 'none';
             simCanvas.style.display = 'block';
             this.simRenderer.resize();
+            // Timeline jen v Data módu
+            if (timelinePanel) timelinePanel.classList.add('hidden');
         } else {
             dataCanvas.style.display = 'block';
             simCanvas.style.display = 'none';
             this.canvasRenderer.resize();
+            // Zobrazit timeline jen pokud je povolena
+            if (timelinePanel && this.currentProject?.timeline?.enabled) {
+                timelinePanel.classList.remove('hidden');
+                // Apply saved height (V4.2)
+                if (this.currentProject.timeline.height) {
+                    timelinePanel.style.height = this.currentProject.timeline.height + 'px';
+                }
+                this.timelineRenderer?.resize();
+                this.timelineRenderer?.draw();
+            } else if (timelinePanel) {
+                timelinePanel.classList.add('hidden');
+            }
         }
     }
 
@@ -113,6 +493,15 @@ class AppManager {
                 this.redo();
                 return;
             }
+            // Uložit (Ctrl+S) — i z editoru
+            if (e.ctrlKey && (e.key === 's' || e.key === 'S')) {
+                e.preventDefault();
+                void (async () => {
+                    const ok = await this.saveToAPI();
+                    if (ok) this.toast.success('Uloženo (Ctrl+S)');
+                })();
+                return;
+            }
 
             if (isInput) return;
 
@@ -134,6 +523,33 @@ class AppManager {
                 return;
             }
 
+            // === VYTVOŘENÍ STICKY NOTE (T) ===
+            if (e.key === 't' || e.key === 'T') {
+                if (!this.currentProject) return;
+                this.pushHistory();
+                const sticky = this.currentProject.addNode(
+                    "Sticky poznámka",
+                    -renderer.camera.x + window.innerWidth / 2 - 100,
+                    -renderer.camera.y + window.innerHeight / 2 - 60
+                );
+                sticky.shape = 'sticky';
+                sticky.stickyText = '';
+                sticky.stickyCreatedAt = new Date().toISOString();
+                sticky.width = 220;
+                sticky.height = 120;
+                this.selectNode(sticky.id);
+                this.toast.success('Sticky poznámka přidána');
+                return;
+            }
+
+            // === NOTEBOOK MODE TOGGLE (J) ===
+            if (e.key === 'j' || e.key === 'J') {
+                if (this.editor?.toggleNotebookMode) {
+                    this.editor.toggleNotebookMode();
+                }
+                return;
+            }
+
             // === SMAZÁNÍ UZLŮ (Delete / Backspace) ===
             if (e.key === 'Delete' || e.key === 'Backspace') {
                 if (this.selectedNodeIds.size > 0) {
@@ -146,6 +562,55 @@ class AppManager {
                     renderer.draw();
                     this.toast.info("Smazáno");
                 }
+                return;
+            }
+
+            // === PŘEJMENOVÁNÍ / STICKY INLINE (F2) ===
+            if (e.key === 'F2') {
+                e.preventDefault();
+                const selectedId = Array.from(this.selectedNodeIds)[0];
+                if (selectedId) {
+                    const node = this.currentProject.getNode(selectedId);
+                    if (node.shape === 'sticky' && this.currentProject.mode === 'data') {
+                        this.canvasRenderer.beginStickyInlineEdit(node);
+                    } else {
+                        const newTitle = prompt("Přejmenovat uzel:", node.title);
+                        if (newTitle !== null) {
+                            this.pushHistory();
+                            node.title = newTitle;
+                            this.editor.renderCurrentNode();
+                            renderer.draw();
+                        }
+                    }
+                }
+                return;
+            }
+
+            // === PŘEPNUTÍ PŘICHYTÁVÁNÍ (G) (V2.4) ===
+            if (e.key === 'g' || e.key === 'G') {
+                this.snapToGrid = !this.snapToGrid;
+                this.appSettings.snapToGrid = this.snapToGrid;
+                AppManager.writeAppSettingsToStorage(this.appSettings);
+                this.toast.info(this.snapToGrid ? '🧲 Snapping ZAPNUT' : '✨ Snapping VYPNUT');
+                return;
+            }
+
+            // === FOCUS MODE (F) === 
+            if (e.key === 'f' || e.key === 'F') {
+                if (this.focusMode) {
+                    // Vypnout
+                    this.focusMode = false;
+                    this.focusConnectedIds.clear();
+                    this.toast.info('👁️ Focus Mode VYPNUT');
+                } else if (selected) {
+                    // Zapnout pro vybraný uzel
+                    this.focusMode = true;
+                    this.buildFocusSet(selected.id);
+                    this.toast.info('🔦 Focus Mode: ' + selected.title);
+                } else {
+                    this.toast.info('⚠️ Nejdříve vyber uzel.');
+                }
+                renderer.draw();
                 return;
             }
 
@@ -181,6 +646,24 @@ class AppManager {
                 renderer.draw();
             }
         });
+
+        // === HEATMAP MODE (H hold) ===
+        window.addEventListener('keydown', (e) => {
+            if ((e.key === 'h' || e.key === 'H') && !e.ctrlKey && !e.repeat) {
+                const activeTag = document.activeElement.tagName.toLowerCase();
+                const isInput = activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select' || document.activeElement.isContentEditable;
+                if (!isInput) {
+                    this.heatmapMode = true;
+                    this.getActiveRenderer().draw();
+                }
+            }
+        });
+        window.addEventListener('keyup', (e) => {
+            if (e.key === 'h' || e.key === 'H') {
+                this.heatmapMode = false;
+                this.getActiveRenderer().draw();
+            }
+        });
     }
 
     setupUI() {
@@ -189,6 +672,8 @@ class AppManager {
             const isLight = document.body.classList.toggle('light-mode');
             localStorage.setItem('planer_theme', isLight ? 'light' : 'dark');
             this.getActiveRenderer().draw();
+            this.editor?.renderCurrentNode?.();
+            this.timelineRenderer?.draw?.();
         });
         
         if (localStorage.getItem('planer_theme') === 'light') {
@@ -199,9 +684,17 @@ class AppManager {
             this.createNewProject();
         });
 
-        document.getElementById('save-btn').addEventListener('click', () => {
-            this.saveToAPI();
-            this.toast.success("Synchro uloženo na server!");
+        // Brain Dump banner — zavřít tlačítko
+        const brainDumpClose = document.getElementById('brain-dump-banner-close');
+        if (brainDumpClose) {
+            brainDumpClose.addEventListener('click', () => {
+                document.getElementById('brain-dump-banner').classList.add('hidden');
+            });
+        }
+
+        document.getElementById('save-btn').addEventListener('click', async () => {
+            const ok = await this.saveToAPI();
+            if (ok) this.toast.success('Synchro uloženo!');
         });
 
         const searchInput = document.getElementById('search-input');
@@ -225,9 +718,23 @@ class AppManager {
                     (n.content && n.content.toLowerCase().includes(q)) ||
                     (n.tags && n.tags.some(t => t.toLowerCase().includes(q)))
                 );
-                if (node.title.toLowerCase().includes(q) || foundInNotes) {
+                const stickyPlain = (node.shape === 'sticky' && node.stickyText)
+                    ? ProjectNode.stickyPlainText(node.stickyText).toLowerCase()
+                    : '';
+                const inSticky = stickyPlain.includes(q);
+                if (node.title.toLowerCase().includes(q) || foundInNotes || inSticky) {
                     this.searchResults.push(node);
                 }
+            }
+
+            // Notebook fulltext (Fáze 2)
+            const pages = this.currentProject.notebook?.pages || [];
+            const notebookHit = pages.some(page =>
+                (page.title || '').toLowerCase().includes(q) ||
+                (page.content || '').toLowerCase().includes(q)
+            );
+            if (notebookHit && searchCounter) {
+                searchCounter.title = 'Část výsledků je v Notebook režimu';
             }
 
             this.searchIndex = 0;
@@ -290,6 +797,12 @@ class AppManager {
             if (this.currentProject) {
                 pnameInput.value = this.currentProject.name;
                 pmodeSelect.value = this.currentProject.mode;
+                // Naplnit timeline checkbox
+                const tlCheck = document.getElementById('proj-timeline-enabled');
+                if (tlCheck) tlCheck.checked = !!this.currentProject.timeline?.enabled;
+                // Skrýt timeline volbu v Simulaci (jen pro Data mód)
+                const tlGroup = document.getElementById('proj-timeline-group');
+                if (tlGroup) tlGroup.style.display = this.currentProject.mode === 'simulation' ? 'none' : '';
                 settingsModal.classList.remove('hidden');
             }
         });
@@ -303,16 +816,26 @@ class AppManager {
                 const oldMode = this.currentProject.mode;
                 this.currentProject.name = pnameInput.value;
                 this.currentProject.mode = pmodeSelect.value;
-                
+
+                // Uložit timeline enabled
+                const tlCheck = document.getElementById('proj-timeline-enabled');
+                if (tlCheck && this.currentProject.timeline) {
+                    this.currentProject.timeline.enabled = tlCheck.checked;
+                }
+
                 // V2.0 — Sync camera when switching modes
                 if (oldMode !== this.currentProject.mode) {
                     const from = oldMode === 'simulation' ? this.simRenderer : this.canvasRenderer;
                     const to = this.currentProject.mode === 'simulation' ? this.simRenderer : this.canvasRenderer;
                     to.camera = { ...from.camera };
-                    this.updateCanvasVisibility();
-                    this.toast.info(`Přepnuto na mód: ${this.currentProject.mode === 'simulation' ? 'Simulace 🎲' : 'Data 📁'}`);
+                    if (this.currentProject.mode === 'simulation') {
+                        this.toast.warning('Simulace je experimental / beta', 4000);
+                    } else {
+                        this.toast.info('Přepnuto na mód: Data 📁');
+                    }
                 }
-                
+
+                this.updateCanvasVisibility(); // Přepne i viditelnost timeline
                 this.renderTabs();
                 this.editor.showNode(this.getSelectedNode());
                 this.getActiveRenderer().draw();
@@ -342,7 +865,7 @@ class AppManager {
             
             if (this.projects.size > 0) {
                 const firstKey = this.projects.keys().next().value;
-                this.switchProject(firstKey);
+                void this.switchProject(firstKey);
             } else {
                 this.createNewProject();
             }
@@ -400,8 +923,10 @@ class AppManager {
                 // Show/hide sections
                 const nodeActions = document.getElementById('ctx-node-actions');
                 const connectSection = document.getElementById('ctx-connect-section');
+                const edgeActions = document.getElementById('ctx-edge-actions');
                 const dividerNode = document.getElementById('ctx-divider-node');
                 const dividerConnect = document.getElementById('ctx-divider-connect');
+                const dividerEdge = document.getElementById('ctx-divider-edge');
 
                 if (clickedNode) {
                     nodeActions.style.display = '';
@@ -414,12 +939,26 @@ class AppManager {
                         connectSection.style.display = 'none';
                         dividerConnect.style.display = 'none';
                     }
+                    // Hide edge actions when node is clicked
+                    edgeActions.style.display = 'none';
+                    dividerEdge.style.display = 'none';
                 } else {
                     nodeActions.style.display = 'none';
                     dividerNode.style.display = 'none';
-                    // "Connect to selected" not relevant on empty area
                     connectSection.style.display = 'none';
                     dividerConnect.style.display = 'none';
+
+                    // Check for edges if no node clicked (V2.3)
+                    const clickedEdge = renderer.getEdgeAt ? renderer.getEdgeAt(worldPos) : null;
+                    this.contextMenuEdge = clickedEdge;
+
+                    if (clickedEdge) {
+                        edgeActions.style.display = '';
+                        dividerEdge.style.display = '';
+                    } else {
+                        edgeActions.style.display = 'none';
+                        dividerEdge.style.display = 'none';
+                    }
                 }
 
                 // Position and show
@@ -450,6 +989,52 @@ class AppManager {
             this.handleContextAction(action);
             this.hideContextMenu();
         });
+
+        // V2.4 — Color pickers for context menu
+        const edgeColorsDiv = document.getElementById('ctx-edge-colors');
+        const nodeColorsDiv = document.getElementById('ctx-node-colors');
+        
+        // Import check: we need EDGE_COLORS (it's accessible via ProjectNode since it's exported)
+        import('./ProjectNode.js').then(module => {
+            const colors = module.EDGE_COLORS;
+            const renderDots = (container, callback) => {
+                container.innerHTML = '';
+                for (let [cid, info] of Object.entries(colors)) {
+                    const dot = document.createElement('div');
+                    dot.className = 'color-dot';
+                    dot.style.backgroundColor = info.hex;
+                    dot.title = info.label;
+                    dot.onclick = (e) => {
+                        e.stopPropagation();
+                        callback(cid, info.hex);
+                    };
+                    container.appendChild(dot);
+                }
+            };
+
+            renderDots(edgeColorsDiv, (colorId, hex) => {
+                if (this.contextMenuEdge) {
+                    this.pushHistory();
+                    const node = this.currentProject.getNode(this.contextMenuEdge.sourceNodeId);
+                    const edge = node.edges.find(e => e.targetId === this.contextMenuEdge.targetId);
+                    if (edge) {
+                        edge.color = colorId;
+                        this.getActiveRenderer().draw();
+                    }
+                    this.hideContextMenu();
+                }
+            });
+
+            renderDots(nodeColorsDiv, (colorId, hex) => {
+                if (this.contextMenuNodeId) {
+                    this.pushHistory();
+                    const node = this.currentProject.getNode(this.contextMenuNodeId);
+                    node.color = hex;
+                    this.getActiveRenderer().draw();
+                    this.hideContextMenu();
+                }
+            });
+        });
     }
 
     hideContextMenu() {
@@ -465,8 +1050,8 @@ class AppManager {
             case 'new-rect': 
             case 'new-diamond':
             case 'new-circle':
-            case 'new-trapezoid':
-            case 'new-cylinder': {
+            case 'new-hexagon':
+            case 'new-pill': {
                 this.pushHistory();
                 const shape = action.split('-')[1];
                 const node = this.currentProject.addNode("Nový uzel", wp.x, wp.y);
@@ -477,6 +1062,18 @@ class AppManager {
             }
             case 'new-image': {
                 this.handleImageNodeCreation(wp);
+                break;
+            }
+            case 'new-sticky': {
+                this.pushHistory();
+                const sticky = this.currentProject.addNode("Sticky poznámka", wp.x, wp.y);
+                sticky.shape = 'sticky';
+                sticky.stickyText = '';
+                sticky.stickyCreatedAt = new Date().toISOString();
+                sticky.width = 220;
+                sticky.height = 120;
+                this.selectNode(sticky.id);
+                this.toast.success('Sticky poznámka vytvořena');
                 break;
             }
             case 'connect-to-selected': {
@@ -494,7 +1091,7 @@ class AppManager {
                 if (this.contextMenuNodeId) {
                     this.pushHistory();
                     const node = this.currentProject.getNode(this.contextMenuNodeId);
-                    const shapes = ['rect', 'diamond', 'circle', 'trapezoid', 'cylinder'];
+                    const shapes = ['rect', 'diamond', 'circle', 'hexagon', 'pill'];
                     let nextIdx = (shapes.indexOf(node.shape) + 1) % shapes.length;
                     node.shape = shapes[nextIdx];
                     this.selectNode(node.id);
@@ -520,6 +1117,32 @@ class AppManager {
                 }
                 break;
             }
+            case 'add-to-timeline': {
+                if (this.contextMenuNodeId) {
+                    const node = this.currentProject.getNode(this.contextMenuNodeId);
+                    const year = prompt(`Přidej "${node.title}" do timeline. Zadej rok:`, String(new Date().getFullYear()));
+                    if (year !== null) {
+                        const parsedYear = parseInt(year);
+                        if (!isNaN(parsedYear)) {
+                            this.pushHistory();
+                            node.timelineDate = String(parsedYear);
+                            const tl = this.currentProject.timeline;
+                            tl.enabled = true;
+                            // Rozšíř rozsah timeline pokud je rok mimo
+                            if (parsedYear < tl.startYear) tl.startYear = parsedYear - 5;
+                            if (parsedYear > tl.endYear) tl.endYear = parsedYear + 5;
+                            const panel = document.getElementById('timeline-panel');
+                            panel?.classList.remove('hidden');
+                            this.timelineRenderer?.resize();
+                            this.timelineRenderer?.draw();
+                            this.toast.success(`📅 "${node.title}" přidán na timeline (${parsedYear})`);
+                        } else {
+                            this.toast.error('Neplatný rok!');
+                        }
+                    }
+                }
+                break;
+            }
             case 'delete-node': {
                 if (this.contextMenuNodeId) {
                     this.pushHistory();
@@ -527,6 +1150,20 @@ class AppManager {
                     this.selectedNodeIds.delete(this.contextMenuNodeId);
                     this.selectNode(null);
                     renderer.draw();
+                    this.timelineRenderer?.draw();
+                }
+                break;
+            }
+            case 'delete-edge': {
+                if (this.contextMenuEdge) {
+                    this.pushHistory();
+                    const sourceNode = this.currentProject.getNode(this.contextMenuEdge.sourceNodeId);
+                    if (sourceNode) {
+                        sourceNode.removeEdge(this.contextMenuEdge.targetId);
+                        this.editor.renderEdgesList();
+                        renderer.draw();
+                        this.toast.success("Spojení smazáno");
+                    }
                 }
                 break;
             }
@@ -551,15 +1188,42 @@ class AppManager {
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ filename: file.name, base64: base64 })
                     });
-                    const data = await res.json();
-                    if (data.url) {
-                        const node = this.currentProject.addNode(file.name, worldPos.x, worldPos.y);
-                        node.shape = 'image';
-                        node.nodeImage = data.url;
-                        node.width = 150;
-                        node.height = 100;
-                        this.selectNode(node.id);
-                        this.toast.success("Obrázkový uzel přidán!");
+                    let data = {};
+                    try { data = await res.json(); } catch (_) { /* ignore */ }
+                    if (res.ok && data.url) {
+                        // Načteme obrázek pro zjištění přirozeného rozměru
+                        const tempImg = new Image();
+                        tempImg.onload = () => {
+                            const MAX_W = 320;
+                            const ratio = tempImg.naturalHeight / tempImg.naturalWidth;
+                            const nodeW = Math.min(tempImg.naturalWidth, MAX_W);
+                            const nodeH = Math.round(nodeW * ratio);
+
+                            const node = this.currentProject.addNode(file.name, worldPos.x, worldPos.y);
+                            node.shape = 'image';
+                            node.nodeImage = data.url;
+                            node.width = nodeW;
+                            node.height = nodeH;
+                            this.selectNode(node.id);
+                            this.editor.showNode(node); // Aktualizovat W/H vstupy
+                            this.toast.success("Obrázkový uzel přidán!");
+                        };
+                        tempImg.onerror = () => {
+                            // Fallback pro případě chyby
+                            const node = this.currentProject.addNode(file.name, worldPos.x, worldPos.y);
+                            node.shape = 'image';
+                            node.nodeImage = data.url;
+                            node.width = 240;
+                            node.height = 160;
+                            this.selectNode(node.id);
+                            this.toast.success("Obrázkový uzel přidán!");
+                        };
+                        tempImg.src = data.url;
+                    } else {
+                        const msg = res.status === 413
+                            ? 'Obrázek je příliš velký — zmenši soubor nebo rozlišení.'
+                            : 'Nahrávání obrázku selhalo.';
+                        this.toast.error(msg);
                     }
                 } catch (err) {
                     this.toast.error("Upload selhal");
@@ -577,28 +1241,107 @@ class AppManager {
         const name = `Projekt ${this.projects.size + 1}`;
         const proj = new Project(id, name);
         this.projects.set(id, proj);
-        this.switchProject(id);
+        void this.switchProject(id);
     }
 
-    switchProject(id) {
-        if (this.projects.has(id)) {
-            this.currentProject = this.projects.get(id);
-            let rootId = null;
-            for (let [nid, node] of this.currentProject.nodes) {
-                rootId = nid; 
-                break; 
+    async switchProject(id, skipBrainDump = false) {
+        if (!this.projects.has(id)) return;
+
+        // Brain Dump při odchodu z existujícího projektu
+        if (this.currentProject && this.currentProject.id !== id && !skipBrainDump) {
+            const leavingProject = this.currentProject;
+            this.showBrainDumpModal(leavingProject, () => {
+                void this.switchProject(id, true);
+            });
+            return;
+        }
+
+        await this.masterDoc?.prepareProjectSwitch();
+
+        this.canvasRenderer.endStickyInlineEdit(true);
+        this.currentProject = this.projects.get(id);
+        let rootId = null;
+        let centerPos = null;
+        let firstId = null;
+
+        // Najít Pinned uzel, nebo vzít první
+        for (let [nid, node] of this.currentProject.nodes) {
+            if (!firstId) firstId = nid;
+            if (node.isPinned) {
+                rootId = nid;
+                centerPos = { x: node.x + node.width / 2, y: node.y + node.height / 2 };
+                break;
             }
-            this.selectNode(rootId);
-            
-            this.renderTabs();
-            
-            // V2.0 — Reset cameras + switch canvas
-            this.canvasRenderer.camera = { x: 0, y: 0, zoom: 1 };
-            this.simRenderer.camera = { x: 0, y: 0, zoom: 1 };
-            this.updateCanvasVisibility();
-            this.pushHistory(); // V2.1 — First state
+        }
+
+        if (!rootId && firstId) {
+            rootId = firstId;
+            const rngNode = this.currentProject.getNode(rootId);
+            centerPos = { x: rngNode.x + rngNode.width / 2, y: rngNode.y + rngNode.height / 2 };
+        }
+
+        this.selectNode(rootId);
+        this.renderTabs();
+
+        const zoom = this.canvasRenderer.camera ? this.canvasRenderer.camera.zoom : 1;
+        const cx = centerPos ? -centerPos.x + (window.innerWidth / 2) / zoom : 0;
+        const cy = centerPos ? -centerPos.y + (window.innerHeight / 2) / zoom : 0;
+
+        this.canvasRenderer.camera = { ...this.canvasRenderer.camera, x: cx, y: cy };
+        this.simRenderer.camera = { ...this.simRenderer.camera, x: cx, y: cy };
+
+        this.updateCanvasVisibility();
+        this.pushHistory();
+
+        // Zobrazit Brain Dump banner pokud projekt má uložený zápisník
+        this.showBrainDumpBanner(this.currentProject.brainDump);
+
+        await this.masterDoc?.loadForProject(this.currentProject);
+    }
+
+    showBrainDumpModal(project, onDone) {
+        const modal = document.getElementById('brain-dump-modal');
+        const input = document.getElementById('brain-dump-input');
+        const saveBtn = document.getElementById('brain-dump-save-btn');
+        const skipBtn = document.getElementById('brain-dump-skip-btn');
+
+        // Předvyplnit předchozí zápisník pokud existuje
+        input.value = project.brainDump || '';
+        modal.classList.remove('hidden');
+        setTimeout(() => input.focus(), 100);
+
+        const finish = (save) => {
+            if (save) {
+                const text = input.value.trim();
+                project.brainDump = text || null;
+                this.saveToAPI();
+            }
+            modal.classList.add('hidden');
+            input.value = '';
+            saveBtn.removeEventListener('click', onSave);
+            skipBtn.removeEventListener('click', onSkip);
+            onDone();
+        };
+
+        const onSave = () => finish(true);
+        const onSkip = () => finish(false);
+
+        saveBtn.addEventListener('click', onSave, { once: true });
+        skipBtn.addEventListener('click', onSkip, { once: true });
+    }
+
+    showBrainDumpBanner(text) {
+        const banner = document.getElementById('brain-dump-banner');
+        const bannerText = document.getElementById('brain-dump-banner-text');
+
+        if (text && text.trim()) {
+            bannerText.textContent = text;
+            banner.classList.remove('hidden');
+        } else {
+            banner.classList.add('hidden');
         }
     }
+
 
     renderTabs() {
         const container = document.getElementById('tabs-container');
@@ -607,7 +1350,7 @@ class AppManager {
         for (let [id, proj] of this.projects) {
             const tab = document.createElement('div');
             tab.className = `tab ${this.currentProject && this.currentProject.id === id ? 'active' : ''}`;
-            tab.innerHTML = `<span class="tab-mode-icon">${proj.mode==='simulation'?'🎲':'📁'}</span> ${proj.name}`;
+            tab.innerHTML = `<span class="tab-mode-icon">${proj.mode==='simulation'?'🎲':'📁'}</span> ${proj.name}${proj.mode==='simulation'?' <span class="tab-beta-badge" title="Experimental">β</span>':''}`;
             
             tab.addEventListener('dblclick', (e) => {
                 e.stopPropagation();
@@ -640,13 +1383,21 @@ class AppManager {
             });
 
             tab.addEventListener('click', () => {
-                this.switchProject(id);
+                void this.switchProject(id);
             });
             container.appendChild(tab);
         }
     }
 
     selectNode(id, additive = false) {
+        const editingSticky = this.canvasRenderer?.getStickyEditingNodeId?.();
+        if (editingSticky) {
+            const keep = id === editingSticky && !additive;
+            if (!keep) {
+                this.canvasRenderer.endStickyInlineEdit(true);
+            }
+        }
+
         if (!additive) {
             this.selectedNodeIds.clear();
         }
@@ -672,6 +1423,43 @@ class AppManager {
         if (this.selectedNodeIds.size === 0) return null;
         const lastId = Array.from(this.selectedNodeIds).pop();
         return this.currentProject.getNode(lastId);
+    }
+
+    // Focus Mode BFS — rekurzivně přes obousměrné hrany
+    buildFocusSet(startId) {
+        if (!this.currentProject) return;
+        const visited = new Set();
+        const queue = [startId];
+
+        // Vybuduj mapu zpětných hran (kdo ukazuje NA daný uzel)
+        const incomingEdges = new Map();
+        for (let [id, node] of this.currentProject.nodes) {
+            for (let edge of node.edges) {
+                if (!incomingEdges.has(edge.targetId)) incomingEdges.set(edge.targetId, []);
+                incomingEdges.get(edge.targetId).push(id);
+            }
+        }
+
+        while (queue.length > 0) {
+            const current = queue.shift();
+            if (visited.has(current)) continue;
+            visited.add(current);
+
+            const node = this.currentProject.getNode(current);
+            if (!node) continue;
+
+            // Odchozí hrany
+            for (let edge of node.edges) {
+                if (!visited.has(edge.targetId)) queue.push(edge.targetId);
+            }
+            // Příchozí hrany
+            const incoming = incomingEdges.get(current) || [];
+            for (let srcId of incoming) {
+                if (!visited.has(srcId)) queue.push(srcId);
+            }
+        }
+
+        this.focusConnectedIds = visited;
     }
 
     // V2.2 — Smart Alignment Guides logic
@@ -776,18 +1564,36 @@ class AppManager {
         this.editor.showNode(null);
         this.renderTabs();
         this.getActiveRenderer().draw();
+        void this.masterDoc?.loadForProject(this.currentProject);
+    }
+
+    /** Mapuje HTTP status z API na uživatelskou hlášku */
+    apiErrorMessage(status, fallback = 'Požadavek selhal') {
+        if (status === 413) return 'Soubor nebo data jsou příliš velká (limit serveru).';
+        if (status === 400) return 'Neplatná data — zkus to znovu.';
+        if (status === 403) return 'Přístup odepřen.';
+        if (status === 404) return 'Endpoint nenalezen.';
+        if (status >= 500) return 'Chyba serveru při ukládání.';
+        return fallback;
     }
 
     async saveToAPI() {
-        if (!this.currentProject) return;
+        if (!this.currentProject) return false;
         try {
-            await fetch('/api/save-project', {
+            const res = await fetch('/api/save-project', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ project: this.currentProject.toJSON() })
             });
+            if (!res.ok) {
+                this.toast.error(this.apiErrorMessage(res.status, 'Uložení selhalo'));
+                return false;
+            }
+            return true;
         } catch (err) {
-            console.error("Auto-sync selhal", err);
+            console.error('Auto-sync selhal', err);
+            this.toast.error('Nelze spojit se serverem — je sidecar / server.py spuštěný?');
+            return false;
         }
     }
 
@@ -802,10 +1608,12 @@ class AppManager {
                         const proj = Project.fromJSON(pData);
                         this.projects.set(proj.id, proj);
                     }
-                    this.switchProject(data.projects[0].id);
+                    void this.switchProject(data.projects[0].id);
                     this.pushHistory(); // V2.1 — First state
                     return true;
                 }
+            } else if (res.status >= 400) {
+                this.toast.error(this.apiErrorMessage(res.status, 'Načtení projektů selhalo'));
             }
         } catch(e) {
             console.error("Load failed", e);

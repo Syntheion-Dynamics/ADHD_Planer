@@ -1,12 +1,21 @@
 # Ignore user project data
 Projects/*.json
+Projects/*.master.html
 !Projects/.gitkeep
+Images/
+Documents/
 
 # Python temporary files
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+# Electron / Node
+node_modules/
+dist/
+python-runtime/
+*.log
 
 # Editor and OS temporary files
 .vscode/

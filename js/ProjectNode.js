@@ -25,6 +25,8 @@ export class ProjectNode {
         
         // V2.0 — Thumbnail obrázek na uzlu (URL pro zobrazení na canvasu v simulaci)
         this.nodeImage = null;
+        this.color = null; // V2.4: Vlastní barva rámečku (hex)
+        this.labelFontSize = 14; // V4.1: Velikost písma popisku uzlu (px, range 8-32)
         
         this.notes = [
             {
@@ -42,7 +44,7 @@ export class ProjectNode {
         this.y = y;
         
         // V2.1 — Resizing a nové tvary
-        // tvary: 'rect', 'diamond', 'circle', 'trapezoid', 'cylinder', 'image'
+        // tvary: 'rect', 'diamond', 'circle', 'hexagon', 'pill', 'image', 'sticky'
         this.width = 180;
         this.height = 60;
         
@@ -51,7 +53,59 @@ export class ProjectNode {
         this.edges = []; 
         
         // Stará kompatibilita (necháme prázdné a plní se při nahrávání starých grafů)
-        this.childrenIds = []; 
+        this.childrenIds = [];
+
+        // V3.0 — Heatmap: kdy byl napřídy editován
+        this.lastEditedAt = Date.now();
+
+        // V4.1 — Timeline: datum eventu (string YYYY nebo YYYY-MM nebo null)
+        this.timelineDate = null;
+
+        // Sticky note: rich HTML tělo + čas vytvoření (pečeť na plátně)
+        this.stickyText = '';
+        this.stickyCreatedAt = null;
+        /** @type {string|null} hex — null = téma (světlý/tmavý) */
+        this.stickyBgColor = null;
+        /** @type {string|null} hex — null = výchozí kontrast k pozadí */
+        this.stickyTextColor = null;
+    }
+
+    /** Plain text z HTML pro canvas wrap / vyhledávání (zachová Enter / odstavce jako \n) */
+    static stickyPlainText(html) {
+        if (!html) return '';
+        if (typeof document !== 'undefined') {
+            const el = document.createElement('div');
+            el.innerHTML = html;
+            let t = (el.innerText ?? el.textContent ?? '')
+                .replace(/\r\n/g, '\n')
+                .replace(/\u00a0/g, ' ');
+            t = t.replace(/\n{3,}/g, '\n\n');
+            return t;
+        }
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        return (doc.body.textContent || '').replace(/\u00a0/g, ' ');
+    }
+
+    /** Word-wrap pro měření textu na canvasu (ctx.measureText) */
+    static wrapStickyPlainLines(ctx, text, maxWidth) {
+        const lines = [];
+        const paragraphs = (text || '').split(/\n/);
+        for (let pi = 0; pi < paragraphs.length; pi++) {
+            const words = paragraphs[pi].split(/\s+/).filter(Boolean);
+            let current = '';
+            for (const word of words) {
+                const test = current ? `${current} ${word}` : word;
+                if (ctx.measureText(test).width > maxWidth && current) {
+                    lines.push(current);
+                    current = word;
+                } else {
+                    current = test;
+                }
+            }
+            if (current) lines.push(current);
+            if (words.length === 0 && pi < paragraphs.length - 1) lines.push('');
+        }
+        return lines;
     }
 
     // V2.2 — Pomocník pro hitboxy a kreslení (upraveno pro přesnější circle hitbox)

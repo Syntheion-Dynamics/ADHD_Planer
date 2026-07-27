@@ -1,0 +1,2 @@
+# PDF import hlavního dokumentu (ODT jde bez závislostí přes stdlib)
+pypdf>=4.0.0

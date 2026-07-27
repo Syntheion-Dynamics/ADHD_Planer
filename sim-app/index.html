@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sim Studio (experimental)</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=Outfit:wght@400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="app">
+        <header class="sim-toolbar">
+            <h1 class="sim-logo">Sim Studio <span style="font-size:0.55em;opacity:0.7;font-weight:600;">experimental</span></h1>
+            <input type="text" id="proj-name" class="proj-name-input" placeholder="Název projektu" />
+            <div class="toolbar-actions">
+                <button type="button" id="btn-add-node" class="btn primary">+ Uzel</button>
+                <button type="button" id="btn-step" class="btn">Krok</button>
+                <button type="button" id="btn-reset-sim" class="btn">Reset sim</button>
+                <span class="tick-badge">tick: <strong id="sim-tick">0</strong></span>
+                <button type="button" id="btn-save-file" class="btn">Uložit JSON</button>
+                <label class="btn file-label">
+                    Načíst
+                    <input type="file" id="file-load" accept="application/json,.json" hidden />
+                </label>
+                <button type="button" id="btn-export-game" class="btn accent">Export pro hru</button>
+                <button type="button" id="btn-theme" class="btn ghost" title="Světlý / tmavý">Téma</button>
+            </div>
+        </header>
+        <div class="sim-main">
+            <div class="canvas-wrap">
+                <canvas id="sim-canvas"></canvas>
+                <p class="canvas-hint">Táhni zelené body pro spojení · Mezerník = krok · Ctrl+Z = zpět · Del = smazat</p>
+            </div>
+            <aside id="editor-panel" class="editor-panel">
+                <h2>Inspektor</h2>
+                <p id="editor-empty" class="muted">Vyber uzel nebo hranu.</p>
+                <div id="editor-node" class="editor-block hidden">
+                    <label>Název
+                        <input type="text" id="ed-node-title" />
+                    </label>
+                    <label>Typ uzlu (simKind)
+                        <select id="ed-node-kind">
+                            <option value="constant">constant — pevný výstup (out)</option>
+                            <option value="passthrough">passthrough — součet vstupů → out</option>
+                            <option value="combat">combat — HP, armor, vstup = damage</option>
+                            <option value="stock">stock — sklad (count += vstupy)</option>
+                            <option value="actor">actor — postava (D&amp;D, inventář, lokace)</option>
+                        </select>
+                    </label>
+                    <div id="editor-actor-meta" class="editor-block actor-meta hidden">
+                        <h3>Actor</h3>
+                        <label>Role
+                            <select id="ed-node-role">
+                                <option value="player">player</option>
+                                <option value="npc">npc</option>
+                                <option value="enemy">enemy</option>
+                                <option value="friendly">friendly</option>
+                            </select>
+                        </label>
+                        <label>Archetyp (preset)
+                            <select id="ed-archetype"></select>
+                        </label>
+                        <label>Obrázek (URL)
+                            <input type="url" id="ed-node-image" placeholder="https://… nebo /Images/…" />
+                        </label>
+                        <label>Tvar na canvasu
+                            <select id="ed-node-shape">
+                                <option value="rect">obdélník</option>
+                                <option value="image">obrázek (výplň)</option>
+                                <option value="circle">kruh</option>
+                            </select>
+                        </label>
+                        <label>Tagy (čárky)
+                            <input type="text" id="ed-node-tags" placeholder="hasInventory, hostile" />
+                        </label>
+                    </div>
+                    <h3>Výchozí proměnné</h3>
+                    <div id="ed-vars-list"></div>
+                </div>
+                <div id="editor-edge" class="editor-block hidden">
+                    <h3>Hrana</h3>
+                    <label>Kanál
+                        <select id="ed-edge-channel">
+                            <option value="flow.number">flow.number</option>
+                            <option value="signal">signal (rezerva)</option>
+                        </select>
+                    </label>
+                    <label>Transform <span class="muted tiny">mul:2, clamp:0:100, lerp:0.5:20</span>
+                        <input type="text" id="ed-edge-transform" placeholder="mul:2" />
+                    </label>
+                    <label>Popisek
+                        <input type="text" id="ed-edge-label" />
+                    </label>
+                    <label>Zdrojový klíč (volitelné)
+                        <input type="text" id="ed-edge-skey" placeholder="out" />
+                    </label>
+                    <label>Cílový klíč (sčítá do proměnné cíle; combat ignoruje hp/armor)
+                        <input type="text" id="ed-edge-tkey" placeholder="gold, str…" />
+                    </label>
+                </div>
+            </aside>
+        </div>
+        <div id="toast" class="toast" role="status"></div>
+    </div>
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>
